@@ -175,7 +175,8 @@ DISPLAY_PAGE = r"""
   /* mapping layer */
   #uv { position: fixed; inset: 0; overflow: hidden; background: #000; display: none; }
   #uvquad { position: absolute; left: 0; top: 0; transform-origin: 0 0;
-            background-size: 100% 100%; image-rendering: auto; background: #000; }
+            background-color: #000; background-size: 100% 100%;
+            background-repeat: no-repeat; image-rendering: auto; }
   #uvimg { position: absolute; display: none; }
   #uvmsg { position: fixed; inset: 0; display: none; align-items: center;
            justify-content: center; text-align: center; background: #111;
@@ -202,7 +203,7 @@ const S = 1000;                         // virtual size of the UV source quad
 const ORDER = ["top_left","top_right","bottom_right","bottom_left"];
 const LABELS = {top_left:"Top-Left", top_right:"Top-Right",
                 bottom_right:"Bottom-Right", bottom_left:"Bottom-Left"};
-let DISPLAY_ID = null, LAST = null, GRAD = null;
+let DISPLAY_ID = null, LAST = null, GRAD = null, GRAD_KEY = null;
 
 function clientId() {
   let id = localStorage.getItem("calib_client_id");
@@ -211,14 +212,31 @@ function clientId() {
   return id;
 }
 
-// 2x2 UV gradient (R=x, G=y), stretched smoothly by the browser.
-function uvDataURL() {
-  const cv = document.createElement("canvas"); cv.width = 2; cv.height = 2;
-  const ctx = cv.getContext("2d"); const d = ctx.createImageData(2,2);
-  const px = [[0,0],[255,0],[0,255],[255,255]];  // TL,TR,BL,BR -> (R=x,G=y)
-  for (let i=0;i<4;i++){ d.data[i*4]=px[i][0]; d.data[i*4+1]=px[i][1];
-                         d.data[i*4+2]=0; d.data[i*4+3]=255; }
-  ctx.putImageData(d,0,0); return cv.toDataURL();
+// UV gradient (R=x, G=y) with a checkerboard in the BLUE channel. The checker
+// cells are squares measured in the ORIGINAL CALIBRATION PHOTO: the UV box spans
+// bw x bh photo pixels, so we size cells in photo pixels (different cell counts
+// per axis) rather than in the normalized box. Rendered full-res -> no tiling.
+const CHECKER_CELLS_LONG = 8;   // checker cells along the longer photo axis
+function uvDataURL(bounds) {
+  const N = 512;
+  const bw = bounds.max_x - bounds.min_x, bh = bounds.max_y - bounds.min_y;
+  const cell = Math.max(bw, bh) / CHECKER_CELLS_LONG;   // square cell size in photo px
+  const cv = document.createElement("canvas"); cv.width = N; cv.height = N;
+  const ctx = cv.getContext("2d"); const d = ctx.createImageData(N, N);
+  for (let j = 0; j < N; j++) {
+    for (let i = 0; i < N; i++) {
+      const o = (j*N + i)*4;
+      // photo-space position of this UV pixel
+      const px = bounds.min_x + (i / N) * bw;
+      const py = bounds.min_y + (j / N) * bh;
+      const cx = Math.floor(px / cell), cy = Math.floor(py / cell);
+      d.data[o]   = Math.round(i / (N-1) * 255);           // R = x
+      d.data[o+1] = Math.round(j / (N-1) * 255);           // G = y
+      d.data[o+2] = ((cx + cy) & 1) ? 255 : 0;             // B = square checkerboard
+      d.data[o+3] = 255;
+    }
+  }
+  ctx.putImageData(d, 0, 0); return cv.toDataURL();
 }
 
 // Solve an 8x8 linear system (Gaussian elimination with partial pivoting).
@@ -260,7 +278,6 @@ async function register(){
     el.innerHTML = `<img src="/marker/${marker_id}.png" alt="marker ${marker_id}">` +
                    `<span class="dbg">${LABELS[slot]} · ID ${marker_id}</span>`;
   }
-  GRAD = uvDataURL();
   document.getElementById("uvimg").addEventListener("load", renderUV);
   poll(); setInterval(poll, 1000);
   window.addEventListener("resize", renderUV);
@@ -348,7 +365,12 @@ function renderUV(){
     }
   } else {
     img.style.display = "none";
+    // (re)build the gradient+checker for the current bounds so cells stay square
+    const key = `${Math.round(bw)}x${Math.round(bh)}`;
+    if (key !== GRAD_KEY){ GRAD = uvDataURL(b); GRAD_KEY = key; }
     q.style.backgroundImage = `url(${GRAD})`;
+    q.style.backgroundSize = "100% 100%";   // fill the UV box exactly, no tiling
+    q.style.backgroundRepeat = "no-repeat";
   }
 }
 
