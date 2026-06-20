@@ -5,3 +5,5 @@ test_image.png
 annotated.png
 *.png
 !docs/*.png
+calibration_debug/
+mosiac/calibration_debug/

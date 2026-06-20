@@ -17,8 +17,8 @@ import cv2
 import numpy as np
 from flask import Flask, jsonify, render_template_string, request
 
-import detector
-from cli import _spec_output, annotate
+from mosiac import detector
+from .cli import _spec_output, annotate
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024  # 32 MB uploads

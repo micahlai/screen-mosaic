@@ -16,7 +16,7 @@ import sys
 
 import cv2
 
-import detector
+from mosiac import detector
 
 
 def _spec_output(result: dict) -> dict:

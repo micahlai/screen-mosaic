@@ -24,8 +24,12 @@ ROUTES:
   POST /reset            clear the display registry + phase
   GET  /marker/<id>.png  rendered ArUco marker
 
-Run:
-    python calibration_server.py
+  - "particles": a live particle-flow animation (visualization.ParticleFlow),
+    rendered server-side at a resolution matching the screens' bounding-box
+    orientation and streamed to every slave, warped per screen like the UV map.
+
+Run the host (both web apps):
+    python mosiac
 """
 
 from __future__ import annotations
@@ -35,13 +39,19 @@ import io
 import json
 import socket
 import threading
+import time
 from pathlib import Path
 
 import cv2
 import numpy as np
-from flask import Flask, jsonify, render_template_string, request, send_file
+from flask import Flask, Response, jsonify, render_template_string, request, send_file
 
-import detector
+try:                       # `python -m mosiac` / imported as a package
+    from . import detector
+    from .visualization import ParticleFlow
+except ImportError:        # `python mosiac` (directory on sys.path)
+    import detector
+    from visualization import ParticleFlow
 
 MARKER_DICT = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
 MARKERS_PER_DISPLAY = 4
@@ -68,11 +78,19 @@ _uv_bounds = None                   # global UV domain = bbox of all screen corn
 # Fraction of the screen-corner bounding box added as margin around the UV map.
 UV_MARGIN = 0.05
 
-# Optional content image mapped onto the UV space instead of the color gradient.
+# Optional content mapped onto the UV space instead of the color gradient.
+_content_kind = None     # None | "image" | "particles"
 _content_bytes = None
 _content_mime = "image/png"
 _content_version = 0
 _content_mode = "fill"   # "fill" = stretch to UV box | "fit" = preserve aspect
+
+# Live particle-flow visualization, sized to the UV bounding-box orientation.
+PARTICLE_MAX_SIDE = 960
+_particles = None
+_particle_frame = None   # latest rendered JPEG bytes
+_particle_size = None    # (w, h) the sim is currently running at
+_particle_started = False
 
 
 def _register(client_id: str) -> dict:
@@ -362,8 +380,7 @@ def status(display_id: str):
     with _lock:
         phase = _phase
         bounds = _uv_bounds
-        content = (None if _content_bytes is None else
-                   {"url": f"/content/image?v={_content_version}", "mode": _content_mode})
+        content = _content_descriptor()
     cap = d["capture"]
     if cap is None:
         return jsonify({"captured": False, "phase": phase,
@@ -396,24 +413,35 @@ def set_phase():
 
 @app.post("/reset")
 def reset():
-    global _seq, _phase, _uv_bounds, _content_bytes, _content_version
+    global _seq, _phase, _uv_bounds, _content_kind, _content_bytes, _content_version
     with _lock:
         _displays.clear()
         _seq = 0
         _phase = "mapping"
         _uv_bounds = None
+        _content_kind = None
         _content_bytes = None
         _content_version = 0
     return jsonify({"ok": True})
 
 
 # ---------------------------------------------------------------------------
-# Content image mapped onto the UV space
+# Content mapped onto the UV space: uploaded image OR live particle flow
 # ---------------------------------------------------------------------------
+
+def _content_descriptor():
+    """Build the `content` object for /status. Caller holds _lock."""
+    if _content_kind == "image" and _content_bytes is not None:
+        return {"kind": "image", "url": f"/content/image?v={_content_version}",
+                "mode": _content_mode}
+    if _content_kind == "particles":
+        return {"kind": "particles", "url": "/content/stream", "mode": _content_mode}
+    return None
+
 
 @app.post("/content")
 def upload_content():
-    global _content_bytes, _content_mime, _content_version, _content_mode
+    global _content_kind, _content_bytes, _content_mime, _content_version, _content_mode
     file = request.files.get("file")
     if file is None or file.filename == "":
         return jsonify({"error": "No image uploaded"}), 400
@@ -421,12 +449,94 @@ def upload_content():
     if mode not in ("fill", "fit"):
         mode = "fill"
     with _lock:
+        _content_kind = "image"
         _content_bytes = file.read()
         _content_mime = file.mimetype or "image/png"
         _content_mode = mode
         _content_version += 1
         version = _content_version
-    return jsonify({"ok": True, "version": version, "mode": mode})
+    return jsonify({"ok": True, "kind": "image", "version": version, "mode": mode})
+
+
+@app.post("/content/particles")
+def start_particles():
+    """Switch the mapped content to the live particle-flow visualization."""
+    global _content_kind, _content_mode
+    body = request.get_json(silent=True) or {}
+    mode = body.get("mode", "fill")
+    if mode not in ("fill", "fit"):
+        mode = "fill"
+    with _lock:
+        _content_kind = "particles"
+        _content_mode = mode
+    _ensure_particle_thread()
+    return jsonify({"ok": True, "kind": "particles", "mode": mode})
+
+
+@app.post("/content/clear")
+def clear_content():
+    """Drop any mapped content; screens fall back to the UV color gradient."""
+    global _content_kind
+    with _lock:
+        _content_kind = None
+    return jsonify({"ok": True, "kind": None})
+
+
+@app.get("/content/stream")
+def content_stream():
+    """MJPEG stream of the particle flow; an <img> pointed here auto-updates."""
+    def gen():
+        boundary = b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
+        while True:
+            with _lock:
+                frame = _particle_frame
+            if frame is None:
+                time.sleep(0.03)
+                continue
+            yield boundary + frame + b"\r\n"
+            time.sleep(0.04)
+    return Response(gen(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
+
+def _desired_particle_size():
+    """Resolution matching the screens' bounding-box orientation/aspect."""
+    b = _uv_bounds
+    if not b:
+        return (PARTICLE_MAX_SIDE, PARTICLE_MAX_SIDE * 9 // 16)
+    bw, bh = b["max_x"] - b["min_x"], b["max_y"] - b["min_y"]
+    if bw >= bh:
+        return (PARTICLE_MAX_SIDE, max(1, round(PARTICLE_MAX_SIDE * bh / bw)))
+    return (max(1, round(PARTICLE_MAX_SIDE * bw / bh)), PARTICLE_MAX_SIDE)
+
+
+def _particle_loop():
+    global _particles, _particle_frame, _particle_size
+    while True:
+        if _content_kind != "particles":
+            time.sleep(0.1)
+            continue
+        size = _desired_particle_size()
+        if _particles is None or _particle_size != size:
+            # scale particle count with area so density stays consistent
+            n = max(200, min(1200, size[0] * size[1] // 1200))
+            _particles = ParticleFlow(size[0], size[1], num_particles=n)
+            _particle_size = size
+        _particles.step()
+        frame = _particles.render()
+        ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        if ok:
+            with _lock:
+                _particle_frame = buf.tobytes()
+        time.sleep(0.04)   # ~25 fps
+
+
+def _ensure_particle_thread():
+    global _particle_started
+    with _lock:
+        if _particle_started:
+            return
+        _particle_started = True
+    threading.Thread(target=_particle_loop, daemon=True).start()
 
 
 @app.post("/content/mode")
@@ -516,6 +626,8 @@ PHONE_PAGE = r"""
   <p class="sub">Warped per screen so it looks straight from the camera's position.</p>
   <input id="content" type="file" accept="image/*">
   <label class="btn" for="content">🖼️ Upload Image to Map</label>
+  <button class="btn" id="particles" style="background:#af52de">✨ Show Particles</button>
+  <button class="btn grey" id="clearContent">Clear (UV gradient)</button>
   <div style="margin-top:12px; font-size:15px;">
     <label><input type="radio" name="cmode" value="fill" checked> Fill (stretch)</label>
     &nbsp;&nbsp;&nbsp;
@@ -569,6 +681,20 @@ document.querySelectorAll('input[name=cmode]').forEach(r=>r.addEventListener('ch
     body:JSON.stringify({mode:currentMode()})});
   cstatus.innerHTML=`<span class="ok">Mode: ${currentMode()}</span>`;
 }));
+document.getElementById('particles').addEventListener('click', async ()=>{
+  cstatus.textContent='Starting particles…'; cstatus.className='status';
+  try{
+    const res=await fetch('/content/particles',{method:'POST',
+      headers:{'Content-Type':'application/json'}, body:JSON.stringify({mode:currentMode()})});
+    if(!res.ok) throw new Error('Failed');
+    setPhase('mapping');
+    cstatus.innerHTML='<span class="ok">✨ Particles mapped to screens</span>';
+  }catch(e){ cstatus.innerHTML=`<span class="err">${e.message}</span>`; }
+});
+document.getElementById('clearContent').addEventListener('click', async ()=>{
+  await fetch('/content/clear',{method:'POST'});
+  cstatus.innerHTML='<span class="ok">Cleared — showing UV gradient</span>';
+});
 
 async function send(file){
   statusEl.textContent='Detecting markers…'; statusEl.className='status';
@@ -745,10 +871,15 @@ def _lan_ip() -> str:
         s.close()
 
 
-if __name__ == "__main__":
+def main():
     ip = _lan_ip()
-    print("Calibration backend running. Open on the LAN:")
+    print("Mosiac host running. Open on the LAN:")
     print(f"  Screen slave : http://{ip}:5001/display")
     print(f"  Phone capture: http://{ip}:5001/phone")
     print(f"Debug captures saved to: {DEBUG_DIR}")
-    app.run(host="0.0.0.0", port=5001, debug=True, threaded=True)
+    # debug=False so the particle background thread isn't duplicated by the reloader
+    app.run(host="0.0.0.0", port=5001, threaded=True)
+
+
+if __name__ == "__main__":
+    main()

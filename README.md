@@ -1,92 +1,69 @@
-# Display Marker Detector
+# Mosiac
 
-Analyze a single image containing one or more **displays**. Each display shows
-four fiducial markers (ArUco or AprilTag), one at every screen corner. The app
-detects all markers, groups them into displays, builds each display's screen
-quadrilateral, and returns the corners in **normalized image coordinates**.
+Turn several ordinary displays into one coordinated canvas using a single phone
+photo. Each screen shows four ArUco markers in its corners; you photograph them
+all from one spot; the host then warps content per-screen so that — viewed from
+where the photo was taken — every screen lines up into one continuous image.
 
-The photo itself is the only coordinate space: `origin = top-left`, `x = right`,
-`y = down`. No real-world geometry (depth, scale, distance, camera pose) is
-estimated.
-
-## Setup
+## Run the host
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+
+python mosiac
 ```
 
-## Web app
+This starts the backend and **two web apps** on `:5001` (LAN URLs are printed):
+
+- **Screen slave** — open `http://<host-ip>:5001/display` on each screen. Each
+  browser auto-claims the next display slot (1st → `display_1` with marker IDs
+  0–3, 2nd → `display_2` with 4–7, …) and shows its four corner markers.
+- **Phone** — open `http://<host-ip>:5001/phone`. Take a photo of all screens,
+  then map content onto them.
+
+## Phases (switched from the phone)
+
+1. **Calibration** — every screen shows ArUco markers flush in its far corners.
+   Tapping *Take Photo* on the phone reveals the markers; the photo is detected,
+   each screen's corners are recovered (using the marker corner that touches the
+   real screen corner), and any screen that didn't fully make the photo is
+   highlighted on that screen with a message.
+2. **Mapping** (default) — each screen renders mapped content, projectively
+   warped by its photographed corners so skewed screens look straight from the
+   camera. Content options:
+   - **UV map** — x→red, y→green gradient (default).
+   - **Uploaded image** — *Fill* (stretch to the screens' bounding box) or
+     *Fit* (preserve aspect ratio).
+   - **Particles** — a live `ParticleFlow` animation rendered server-side at a
+     resolution matching the screens' bounding-box orientation, streamed (MJPEG)
+     to every screen and warped per screen.
+
+The UV domain is the bounding box of all detected screen corners (plus a small
+margin), so the gradient/image/particles span only the region the screens cover.
+
+## Layout
+
+| Path | Purpose |
+|------|---------|
+| `mosiac/` | The host. `python mosiac` runs `__main__` → `server.py`. |
+| `mosiac/server.py` | Flask host: both web apps, calibration, mapping, content. |
+| `mosiac/detector.py` | ArUco/AprilTag detection → grouped, ordered, normalized. |
+| `mosiac/visualization.py` | `ParticleFlow` animation. |
+| `tools/` | Standalone analysis utilities (`python -m tools.cli IMAGE`, etc.). |
+| `legacy/` | Earlier desktop prototype (`master/`, `slave/`, `shared/`). |
+
+## Tools
 
 ```bash
-python app.py
-# open http://127.0.0.1:5000
+python -m tools.make_test_image            # writes a synthetic test image
+python -m tools.cli IMAGE --annotated out.png   # detect + visualize one image
+python -m tools.app                        # standalone image-analysis web UI
 ```
 
-Upload an image, pick how each screen corner is derived (marker center / inner /
-outer corner), and get the annotated visualization plus the JSON output.
+## Notes
 
-## CLI
-
-```bash
-python cli.py IMAGE [--corner-mode center|inner|outer]
-                    [--dictionary NAME] [--annotated out.png] [--full]
-```
-
-`--full` adds per-marker diagnostics; the default prints just the spec output.
-
-## Try it without a photo
-
-```bash
-python make_test_image.py            # writes test_image.png (3 displays)
-python cli.py test_image.png --annotated annotated.png
-```
-
-## Output schema
-
-```json
-{
-  "image_size": { "width": 4032, "height": 3024 },
-  "displays": [
-    {
-      "id": "display_1",
-      "corners": {
-        "top_left":     [0.12, 0.31],
-        "top_right":    [0.42, 0.28],
-        "bottom_right": [0.45, 0.57],
-        "bottom_left":  [0.15, 0.60]
-      }
-    }
-  ]
-}
-```
-
-## How it works
-
-1. **Detect** — `cv2.aruco.ArucoDetector` with sub-pixel corner refinement.
-   Several marker dictionaries (AprilTag + ArUco families) are tried and the one
-   with the most detections wins, so the marker family need not be known up
-   front. Each marker returns `{id, center, corners}` in image pixels.
-2. **Group** — markers are assigned to displays using a fixed ID mapping
-   (`detector.DEFAULT_DISPLAY_MAPPING`). Within each display the list position
-   encodes the corner, clockwise from top-left:
-   `[top_left, top_right, bottom_right, bottom_left]`. A display is only emitted
-   when all four of its markers are found; partial displays are flagged with
-   their missing IDs in the full diagnostics.
-3. **Construct** — each screen corner is taken from its marker's center
-   (default) or a designated marker corner (`inner`/`outer` relative to the
-   display centroid).
-4. **Normalize** — every corner is divided by image width/height into `[0, 1]`.
-
-To change which IDs map to which display, edit `DEFAULT_DISPLAY_MAPPING` in
-`detector.py`.
-
-## Files
-
-| File                  | Purpose                                            |
-|-----------------------|----------------------------------------------------|
-| `detector.py`         | Core pipeline: detect → group → construct → normalize |
-| `app.py`              | Flask web UI (upload + annotated result + JSON)    |
-| `cli.py`              | Command-line interface and annotation drawing      |
-| `make_test_image.py`  | Synthetic 3-display test image generator           |
+Coordinates are always the photo's own space (origin top-left, x right, y down);
+no real-world depth/scale/pose is estimated. Marker→display grouping lives in
+`detector.DEFAULT_DISPLAY_MAPPING`.

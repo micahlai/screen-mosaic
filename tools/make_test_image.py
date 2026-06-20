@@ -11,7 +11,7 @@ import sys
 import cv2
 import numpy as np
 
-import detector
+from mosiac import detector
 
 DICT = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
 
