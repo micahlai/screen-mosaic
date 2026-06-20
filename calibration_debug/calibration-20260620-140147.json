@@ -1,0 +1,113 @@
+{
+  "captured_at": "2026-06-20T14:01:47",
+  "source_filename": "image.jpg",
+  "corner_mode": "outer",
+  "image_size": {
+    "width": 3024,
+    "height": 4032
+  },
+  "dictionary": "DICT_4X4_50",
+  "marker_count": 8,
+  "uv_bounds": {
+    "min_x": 139.57647705078125,
+    "min_y": 273.96849212646487,
+    "max_x": 2898.8939819335938,
+    "max_y": 3614.7857498168946
+  },
+  "displays": [
+    {
+      "id": "display_1",
+      "complete": true,
+      "missing_corners": [],
+      "corners": {
+        "top_left": [
+          0.6735533456953745,
+          0.2790904574924045
+        ],
+        "top_right": [
+          0.3037121888821718,
+          0.5246603829520089
+        ],
+        "bottom_right": [
+          0.08763227513227513,
+          0.3506944444444444
+        ],
+        "bottom_left": [
+          0.4900756513000165,
+          0.10561106696961418
+        ]
+      },
+      "corner_points": {
+        "top_left": [
+          2036.8253173828125,
+          1125.292724609375
+        ],
+        "top_right": [
+          918.4256591796875,
+          2115.4306640625
+        ],
+        "bottom_right": [
+          265.0,
+          1414.0
+        ],
+        "bottom_left": [
+          1481.98876953125,
+          425.8238220214844
+        ]
+      }
+    },
+    {
+      "id": "display_2",
+      "complete": true,
+      "missing_corners": [],
+      "corners": {
+        "top_left": [
+          0.6283406656255167,
+          0.4551613520062159
+        ],
+        "top_right": [
+          0.9171529295583251,
+          0.716638655889602
+        ],
+        "bottom_right": [
+          0.728209964812748,
+          0.8588617112901475
+        ],
+        "bottom_left": [
+          0.4176995413643973,
+          0.596597399030413
+        ]
+      },
+      "corner_points": {
+        "top_left": [
+          1900.1021728515625,
+          1835.2105712890625
+        ],
+        "top_right": [
+          2773.470458984375,
+          2889.487060546875
+        ],
+        "bottom_right": [
+          2202.10693359375,
+          3462.930419921875
+        ],
+        "bottom_left": [
+          1263.1234130859375,
+          2405.480712890625
+        ]
+      }
+    },
+    {
+      "id": "display_3",
+      "complete": false,
+      "missing_corners": [
+        "top_left",
+        "top_right",
+        "bottom_right",
+        "bottom_left"
+      ],
+      "corners": null,
+      "corner_points": {}
+    }
+  ]
+}

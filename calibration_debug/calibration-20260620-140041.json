@@ -1,0 +1,113 @@
+{
+  "captured_at": "2026-06-20T14:00:41",
+  "source_filename": "image.jpg",
+  "corner_mode": "outer",
+  "image_size": {
+    "width": 3024,
+    "height": 4032
+  },
+  "dictionary": "DICT_4X4_50",
+  "marker_count": 9,
+  "uv_bounds": {
+    "min_x": 677.9020294189453,
+    "min_y": 293.8611206054687,
+    "max_x": 2417.994271850586,
+    "max_y": 3464.669396972656
+  },
+  "displays": [
+    {
+      "id": "display_1",
+      "complete": true,
+      "missing_corners": [],
+      "corners": {
+        "top_left": [
+          0.25032973920226725,
+          0.6320980011470734
+        ],
+        "top_right": [
+          0.7512543693421379,
+          0.6206396193731398
+        ],
+        "bottom_right": [
+          0.739054039041832,
+          0.8108503553602431
+        ],
+        "bottom_left": [
+          0.26969082141048695,
+          0.8235470605274987
+        ]
+      },
+      "corner_points": {
+        "top_left": [
+          756.9971313476562,
+          2548.619140625
+        ],
+        "top_right": [
+          2271.793212890625,
+          2502.4189453125
+        ],
+        "bottom_right": [
+          2234.8994140625,
+          3269.3486328125
+        ],
+        "bottom_left": [
+          815.5450439453125,
+          3320.541748046875
+        ]
+      }
+    },
+    {
+      "id": "display_2",
+      "complete": true,
+      "missing_corners": [],
+      "corners": {
+        "top_left": [
+          0.3139760658223793,
+          0.3492827339777871
+        ],
+        "top_right": [
+          0.5770949913711144,
+          0.10862816704644097
+        ],
+        "bottom_right": [
+          0.7734454926990327,
+          0.21498814840165395
+        ],
+        "bottom_left": [
+          0.5148602440243676,
+          0.4643807789636037
+        ]
+      },
+      "corner_points": {
+        "top_left": [
+          949.463623046875,
+          1408.3079833984375
+        ],
+        "top_right": [
+          1745.13525390625,
+          437.98876953125
+        ],
+        "bottom_right": [
+          2338.899169921875,
+          866.8322143554688
+        ],
+        "bottom_left": [
+          1556.9373779296875,
+          1872.38330078125
+        ]
+      }
+    },
+    {
+      "id": "display_3",
+      "complete": false,
+      "missing_corners": [
+        "top_left",
+        "top_right",
+        "bottom_right",
+        "bottom_left"
+      ],
+      "corners": null,
+      "corner_points": {}
+    }
+  ]
+}

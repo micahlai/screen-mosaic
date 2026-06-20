@@ -1,0 +1,76 @@
+{
+  "captured_at": "2026-06-20T13:00:30",
+  "source_filename": "p.png",
+  "corner_mode": "outer",
+  "image_size": {
+    "width": 2000,
+    "height": 1200
+  },
+  "dictionary": "DICT_4X4_50",
+  "marker_count": 7,
+  "displays": [
+    {
+      "id": "display_1",
+      "complete": true,
+      "missing_corners": [],
+      "corners": {
+        "top_left": [
+          0.029778867721557616,
+          0.04963143666585287
+        ],
+        "top_right": [
+          0.4847211608886719,
+          0.04963143666585287
+        ],
+        "bottom_right": [
+          0.4847211608886719,
+          0.8745352172851563
+        ],
+        "bottom_left": [
+          0.029778867721557616,
+          0.8745352172851563
+        ]
+      },
+      "corner_points": {
+        "top_left": [
+          59.557735443115234,
+          59.55772399902344
+        ],
+        "top_right": [
+          969.4423217773438,
+          59.55772399902344
+        ],
+        "bottom_right": [
+          969.4423217773438,
+          1049.4422607421875
+        ],
+        "bottom_left": [
+          59.557735443115234,
+          1049.4422607421875
+        ]
+      }
+    },
+    {
+      "id": "display_2",
+      "complete": false,
+      "missing_corners": [
+        "bottom_right"
+      ],
+      "corners": null,
+      "corner_points": {
+        "top_left": [
+          1099.5577392578125,
+          59.55772399902344
+        ],
+        "top_right": [
+          1899.4422607421875,
+          59.55772399902344
+        ],
+        "bottom_left": [
+          1099.5577392578125,
+          1049.4422607421875
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,113 @@
+{
+  "captured_at": "2026-06-20T14:00:22",
+  "source_filename": "image.jpg",
+  "corner_mode": "outer",
+  "image_size": {
+    "width": 4032,
+    "height": 3024
+  },
+  "dictionary": "DICT_4X4_50",
+  "marker_count": 8,
+  "uv_bounds": {
+    "min_x": 552.8658660888672,
+    "min_y": 728.0,
+    "max_x": 3175.4858795166015,
+    "max_y": 2466.0
+  },
+  "displays": [
+    {
+      "id": "display_1",
+      "complete": true,
+      "missing_corners": [],
+      "corners": {
+        "top_left": [
+          0.5752610706147694,
+          0.7771346480758102
+        ],
+        "top_right": [
+          0.5926910884796627,
+          0.3151876863348421
+        ],
+        "bottom_right": [
+          0.7580049302842882,
+          0.3546855865962922
+        ],
+        "bottom_left": [
+          0.7562003968253969,
+          0.7893518518518519
+        ]
+      },
+      "corner_points": {
+        "top_left": [
+          2319.45263671875,
+          2350.05517578125
+        ],
+        "top_right": [
+          2389.73046875,
+          953.1275634765625
+        ],
+        "bottom_right": [
+          3056.27587890625,
+          1072.5692138671875
+        ],
+        "bottom_left": [
+          3049.0,
+          2387.0
+        ]
+      }
+    },
+    {
+      "id": "display_2",
+      "complete": true,
+      "missing_corners": [],
+      "corners": {
+        "top_left": [
+          0.3711827898782397,
+          0.7285969244739997
+        ],
+        "top_right": [
+          0.16668548281230625,
+          0.421255525457796
+        ],
+        "bottom_right": [
+          0.30257936507936506,
+          0.26686507936507936
+        ],
+        "bottom_left": [
+          0.5072122604127914,
+          0.5523717163731812
+        ]
+      },
+      "corner_points": {
+        "top_left": [
+          1496.6090087890625,
+          2203.277099609375
+        ],
+        "top_right": [
+          672.0758666992188,
+          1273.876708984375
+        ],
+        "bottom_right": [
+          1220.0,
+          807.0
+        ],
+        "bottom_left": [
+          2045.079833984375,
+          1670.3720703125
+        ]
+      }
+    },
+    {
+      "id": "display_3",
+      "complete": false,
+      "missing_corners": [
+        "top_left",
+        "top_right",
+        "bottom_right",
+        "bottom_left"
+      ],
+      "corners": null,
+      "corner_points": {}
+    }
+  ]
+}
