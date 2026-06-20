@@ -24,8 +24,8 @@ ROUTES:
   POST /reset            clear the display registry + phase
   GET  /marker/<id>.png  rendered ArUco marker
 
-  - "particles": a live particle-flow animation (visualization.ParticleFlow),
-    rendered server-side at a resolution matching the screens' bounding-box
+  - "visualization": a live animation (mosiac/visualizations: particles, smoke,
+    ...) rendered server-side at a resolution matching the screens' bounding-box
     orientation and streamed to every slave, warped per screen like the UV map.
 
 Run the host (both web apps):
@@ -48,10 +48,10 @@ from flask import Flask, Response, jsonify, render_template_string, request, sen
 
 try:                       # `python -m mosiac` / imported as a package
     from . import detector
-    from .visualization import ParticleFlow
+    from . import visualizations
 except ImportError:        # `python mosiac` (directory on sys.path)
     import detector
-    from visualization import ParticleFlow
+    import visualizations
 
 MARKER_DICT = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
 MARKERS_PER_DISPLAY = 4
@@ -79,18 +79,19 @@ _uv_bounds = None                   # global UV domain = bbox of all screen corn
 UV_MARGIN = 0.05
 
 # Optional content mapped onto the UV space instead of the color gradient.
-_content_kind = None     # None | "image" | "particles"
+_content_kind = None     # None | "image" | "visualization"
 _content_bytes = None
 _content_mime = "image/png"
 _content_version = 0
 _content_mode = "fill"   # "fill" = stretch to UV box | "fit" = preserve aspect
 
-# Live particle-flow visualization, sized to the UV bounding-box orientation.
-PARTICLE_MAX_SIDE = 960
-_particles = None
-_particle_frame = None   # latest rendered JPEG bytes
-_particle_size = None    # (w, h) the sim is currently running at
-_particle_started = False
+# Live visualization (particles / smoke / ...), sized to the UV box orientation.
+VIZ_MAX_SIDE = 960
+_viz_name = "particles"
+_viz = None
+_viz_frame = None        # latest rendered JPEG bytes
+_viz_size = None         # (w, h) the sim is currently running at
+_viz_started = False
 
 
 def _register(client_id: str) -> dict:
@@ -448,7 +449,7 @@ def reset():
 
 
 # ---------------------------------------------------------------------------
-# Content mapped onto the UV space: uploaded image OR live particle flow
+# Content mapped onto the UV space: uploaded image OR a live visualization
 # ---------------------------------------------------------------------------
 
 def _content_descriptor():
@@ -456,9 +457,16 @@ def _content_descriptor():
     if _content_kind == "image" and _content_bytes is not None:
         return {"kind": "image", "url": f"/content/image?v={_content_version}",
                 "mode": _content_mode}
-    if _content_kind == "particles":
-        return {"kind": "particles", "url": "/content/stream", "mode": _content_mode}
+    if _content_kind == "visualization":
+        return {"kind": "visualization", "name": _viz_name, "url": "/content/stream",
+                "mode": _content_mode}
     return None
+
+
+@app.get("/visualizations")
+def list_visualizations():
+    """The visualizations registered in mosiac/visualizations (drives the phone menu)."""
+    return jsonify(visualizations.available())
 
 
 @app.post("/content")
@@ -480,19 +488,25 @@ def upload_content():
     return jsonify({"ok": True, "kind": "image", "version": version, "mode": mode})
 
 
-@app.post("/content/particles")
-def start_particles():
-    """Switch the mapped content to the live particle-flow visualization."""
-    global _content_kind, _content_mode
+@app.post("/content/visualization")
+def start_visualization():
+    """Switch the mapped content to a named live visualization (particles/smoke/...)."""
+    global _content_kind, _content_mode, _viz_name, _viz
     body = request.get_json(silent=True) or {}
+    name = body.get("name", "particles")
     mode = body.get("mode", "fill")
     if mode not in ("fill", "fit"):
         mode = "fill"
+    if name not in {v["name"] for v in visualizations.available()}:
+        return jsonify({"error": f"unknown visualization: {name}"}), 400
     with _lock:
-        _content_kind = "particles"
+        _content_kind = "visualization"
         _content_mode = mode
-    _ensure_particle_thread()
-    return jsonify({"ok": True, "kind": "particles", "mode": mode})
+        if name != _viz_name:
+            _viz_name = name
+            _viz = None          # force the loop to rebuild with the new sim
+    _ensure_viz_thread()
+    return jsonify({"ok": True, "kind": "visualization", "name": name, "mode": mode})
 
 
 @app.post("/content/clear")
@@ -506,12 +520,12 @@ def clear_content():
 
 @app.get("/content/stream")
 def content_stream():
-    """MJPEG stream of the particle flow; an <img> pointed here auto-updates."""
+    """MJPEG stream of the live visualization; an <img> here auto-updates."""
     def gen():
         boundary = b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
         while True:
             with _lock:
-                frame = _particle_frame
+                frame = _viz_frame
             if frame is None:
                 time.sleep(0.03)
                 continue
@@ -520,45 +534,43 @@ def content_stream():
     return Response(gen(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
 
-def _desired_particle_size():
+def _desired_viz_size():
     """Resolution matching the screens' bounding-box orientation/aspect."""
     b = _uv_bounds
     if not b:
-        return (PARTICLE_MAX_SIDE, PARTICLE_MAX_SIDE * 9 // 16)
+        return (VIZ_MAX_SIDE, VIZ_MAX_SIDE * 9 // 16)
     bw, bh = b["max_x"] - b["min_x"], b["max_y"] - b["min_y"]
     if bw >= bh:
-        return (PARTICLE_MAX_SIDE, max(1, round(PARTICLE_MAX_SIDE * bh / bw)))
-    return (max(1, round(PARTICLE_MAX_SIDE * bw / bh)), PARTICLE_MAX_SIDE)
+        return (VIZ_MAX_SIDE, max(1, round(VIZ_MAX_SIDE * bh / bw)))
+    return (max(1, round(VIZ_MAX_SIDE * bw / bh)), VIZ_MAX_SIDE)
 
 
-def _particle_loop():
-    global _particles, _particle_frame, _particle_size
+def _viz_loop():
+    global _viz, _viz_frame, _viz_size
     while True:
-        if _content_kind != "particles":
+        if _content_kind != "visualization":
             time.sleep(0.1)
             continue
-        size = _desired_particle_size()
-        if _particles is None or _particle_size != size:
-            # scale particle count with area so density stays consistent
-            n = max(200, min(1200, size[0] * size[1] // 1200))
-            _particles = ParticleFlow(size[0], size[1], num_particles=n)
-            _particle_size = size
-        _particles.step()
-        frame = _particles.render()
+        size = _desired_viz_size()
+        if _viz is None or _viz_size != size:
+            _viz = visualizations.create(_viz_name, size[0], size[1])
+            _viz_size = size
+        _viz.step()
+        frame = _viz.render()
         ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
         if ok:
             with _lock:
-                _particle_frame = buf.tobytes()
+                _viz_frame = buf.tobytes()
         time.sleep(0.005)  # render is the limiter at high resolution
 
 
-def _ensure_particle_thread():
-    global _particle_started
+def _ensure_viz_thread():
+    global _viz_started
     with _lock:
-        if _particle_started:
+        if _viz_started:
             return
-        _particle_started = True
-    threading.Thread(target=_particle_loop, daemon=True).start()
+        _viz_started = True
+    threading.Thread(target=_viz_loop, daemon=True).start()
 
 
 @app.post("/content/mode")
@@ -605,6 +617,11 @@ PHONE_PAGE = r"""
          font-size: 17px; border: 0; cursor: pointer; margin-top: 12px; }
   .btn.alt { background: #e5e5ea; color: #111; }
   .btn.green { background: #34c759; } .btn.grey { background: #8e8e93; }
+  .lbl { display:block; font-size:12px; color:#888; margin:14px 0 4px;
+         text-transform:uppercase; letter-spacing:.04em; }
+  .sel { width:100%; padding:12px; font-size:16px; border-radius:10px;
+         border:1px solid #ccc; background:#fff; color:#111; margin-top:8px; }
+  @media (prefers-color-scheme: dark){ .sel{background:#1c1c1e;color:#eee;border-color:#333;} }
   .phase { margin-top: 18px; padding: 12px 14px; border-radius: 12px;
            background: #f2f2f7; font-size: 14px; }
   .phase b { text-transform: uppercase; letter-spacing: .04em; }
@@ -644,13 +661,18 @@ PHONE_PAGE = r"""
   <button class="btn grey" id="toCalib">🔳 Show ArUco markers (calibration)</button>
 
   <hr>
-  <h2 style="font-size:17px; margin-bottom:0">Map an image to the screens</h2>
+  <h2 style="font-size:17px; margin-bottom:0">Screen content</h2>
   <p class="sub">Warped per screen so it looks straight from the camera's position.</p>
+  <label class="lbl">Content</label>
+  <select id="contentType" class="sel">
+    <option value="uv">UV map</option>
+    <option value="image">Upload image</option>
+    <option value="viz">Visualization</option>
+  </select>
+  <select id="vizName" class="sel" style="display:none"></select>
   <input id="content" type="file" accept="image/*">
-  <label class="btn" for="content">🖼️ Upload Image to Map</label>
-  <button class="btn" id="particles" style="background:#af52de">✨ Show Particles</button>
-  <button class="btn grey" id="clearContent">Clear (UV gradient)</button>
-  <div style="margin-top:12px; font-size:15px;">
+  <label class="btn" id="uploadBtn" for="content" style="display:none">🖼️ Choose Image</label>
+  <div id="modeRow" style="margin-top:12px; font-size:15px; display:none;">
     <label><input type="radio" name="cmode" value="fill" checked> Fill (stretch)</label>
     &nbsp;&nbsp;&nbsp;
     <label><input type="radio" name="cmode" value="fit"> Fit (keep aspect)</label>
@@ -684,9 +706,53 @@ async function setPhase(p){
 document.getElementById('toMapping').onclick=()=>setPhase('mapping');
 document.getElementById('toCalib').onclick=()=>setPhase('calibration');
 
-// --- map an image onto the UV space ---
-const contentInput=document.getElementById('content'), cstatus=document.getElementById('cstatus');
+// --- screen content: UV map / uploaded image / visualization ---
+const contentType=document.getElementById('contentType'),
+      vizName=document.getElementById('vizName'),
+      uploadBtn=document.getElementById('uploadBtn'),
+      contentInput=document.getElementById('content'),
+      cstatus=document.getElementById('cstatus');
 const currentMode=()=>document.querySelector('input[name=cmode]:checked').value;
+
+// populate the visualization dropdown from whatever is registered in mosiac/visualizations
+(async ()=>{
+  try{
+    const list=await (await fetch('/visualizations')).json();
+    vizName.innerHTML=list.map(v=>`<option value="${v.name}">${v.label}</option>`).join('');
+  }catch(e){}
+})();
+
+function refreshContentUI(){
+  const t=contentType.value;
+  vizName.style.display   = t==='viz'  ? 'block' : 'none';
+  uploadBtn.style.display = t==='image'? 'block' : 'none';
+  // fill/fit only applies to a static image; UV map & visualizations are
+  // already generated at the required resolution/aspect.
+  document.getElementById('modeRow').style.display = t==='image' ? 'block' : 'none';
+}
+async function applyContent(){
+  const t=contentType.value;
+  try{
+    if(t==='uv'){
+      await fetch('/content/clear',{method:'POST'});
+      cstatus.innerHTML='<span class="ok">UV map</span>'; setPhase('mapping');
+    } else if(t==='viz'){
+      // visualizations are rendered at the screens' aspect already -> always fill
+      const res=await fetch('/content/visualization',{method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({name:vizName.value, mode:'fill'})});
+      if(!res.ok) throw new Error('Failed');
+      cstatus.innerHTML=`<span class="ok">✨ ${vizName.options[vizName.selectedIndex].text}</span>`;
+      setPhase('mapping');
+    } else {
+      cstatus.textContent='Choose an image…';
+    }
+  }catch(e){ cstatus.innerHTML=`<span class="err">${e.message}</span>`; }
+}
+contentType.addEventListener('change', ()=>{ refreshContentUI(); applyContent(); });
+vizName.addEventListener('change', applyContent);
+refreshContentUI();
+
 contentInput.addEventListener('change', async ()=>{
   const f=contentInput.files[0]; if(!f) return;
   const fd=new FormData(); fd.append('file',f); fd.append('mode',currentMode());
@@ -703,20 +769,6 @@ document.querySelectorAll('input[name=cmode]').forEach(r=>r.addEventListener('ch
     body:JSON.stringify({mode:currentMode()})});
   cstatus.innerHTML=`<span class="ok">Mode: ${currentMode()}</span>`;
 }));
-document.getElementById('particles').addEventListener('click', async ()=>{
-  cstatus.textContent='Starting particles…'; cstatus.className='status';
-  try{
-    const res=await fetch('/content/particles',{method:'POST',
-      headers:{'Content-Type':'application/json'}, body:JSON.stringify({mode:currentMode()})});
-    if(!res.ok) throw new Error('Failed');
-    setPhase('mapping');
-    cstatus.innerHTML='<span class="ok">✨ Particles mapped to screens</span>';
-  }catch(e){ cstatus.innerHTML=`<span class="err">${e.message}</span>`; }
-});
-document.getElementById('clearContent').addEventListener('click', async ()=>{
-  await fetch('/content/clear',{method:'POST'});
-  cstatus.innerHTML='<span class="ok">Cleared — showing UV gradient</span>';
-});
 
 async function send(file){
   statusEl.textContent='Detecting markers…'; statusEl.className='status';

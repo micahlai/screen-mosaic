@@ -36,9 +36,33 @@ This starts the backend and **two web apps** on `:5001` (LAN URLs are printed):
    - **UV map** — x→red, y→green gradient (default).
    - **Uploaded image** — *Fill* (stretch to the screens' bounding box) or
      *Fit* (preserve aspect ratio).
-   - **Particles** — a live `ParticleFlow` animation rendered server-side at a
+   - **Visualization** — a live animation rendered server-side (GPU) at a
      resolution matching the screens' bounding-box orientation, streamed (MJPEG)
-     to every screen and warped per screen.
+     and warped per screen. Built in: **Particle Flow** and **Smoke** (a
+     stable-fluids fire/smoke sim).
+
+The phone's *Content* dropdown offers UV map / Upload image / Visualization;
+picking Visualization reveals a second dropdown populated from whatever is
+registered in `visualization.py`.
+
+### Adding a visualization
+
+Drop a new file in `mosiac/visualizations/` and import it from that package's
+`__init__.py`:
+
+```python
+# mosiac/visualizations/rings.py
+from . import Visualization, register, torch, _DEVICE
+
+@register("rings", "Rings")
+class Rings(Visualization):
+    def step(self): ...
+    def render(self): return frame   # H x W x 3 uint8 BGR
+```
+
+It appears in the phone dropdown automatically (`GET /visualizations`) — no
+server or frontend changes needed. Preview locally with
+`python -m mosiac.visualizations rings`.
 
 The UV domain is the bounding box of all detected screen corners (plus a small
 margin), so the gradient/image/particles span only the region the screens cover.
@@ -50,7 +74,7 @@ margin), so the gradient/image/particles span only the region the screens cover.
 | `mosiac/` | The host. `python mosiac` runs `__main__` → `server.py`. |
 | `mosiac/server.py` | Flask host: both web apps, calibration, mapping, content. |
 | `mosiac/detector.py` | ArUco/AprilTag detection → grouped, ordered, normalized. |
-| `mosiac/visualization.py` | `ParticleFlow` animation. |
+| `mosiac/visualizations/` | Visualization package: framework in `__init__.py`, one file per viz (`particleflow.py`, `smokesim.py`). |
 | `tools/` | Standalone analysis utilities (`python -m tools.cli IMAGE`, etc.). |
 | `legacy/` | Earlier desktop prototype (`master/`, `slave/`, `shared/`). |
 
