@@ -21,7 +21,7 @@ import cv2          # noqa: F401
 
 # --- adjust this ---------------------------------------------------------
 # Render-resolution multiplier (see README). 4.0 -> ~4K field at ~17 fps on MPS.
-RESOLUTION_SCALE = 4.0
+RESOLUTION_SCALE = 8.0
 # -------------------------------------------------------------------------
 
 try:
