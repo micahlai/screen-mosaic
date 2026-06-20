@@ -1,0 +1,133 @@
+{
+  "captured_at": "2026-06-20T13:07:49",
+  "source_filename": "image.jpg",
+  "corner_mode": "outer",
+  "image_size": {
+    "width": 4032,
+    "height": 3024
+  },
+  "dictionary": "DICT_4X4_50",
+  "marker_count": 14,
+  "displays": [
+    {
+      "id": "display_1",
+      "complete": false,
+      "missing_corners": [
+        "top_left",
+        "bottom_left"
+      ],
+      "corners": null,
+      "corner_points": {
+        "top_right": [
+          466.79888916015625,
+          1318.7532958984375
+        ],
+        "bottom_right": [
+          670.7875366210938,
+          1803.8609619140625
+        ]
+      }
+    },
+    {
+      "id": "display_2",
+      "complete": true,
+      "missing_corners": [],
+      "corners": {
+        "top_left": [
+          0.22566153511168466,
+          0.5351039341517857
+        ],
+        "top_right": [
+          0.43029854789612787,
+          0.5056179793423445
+        ],
+        "bottom_right": [
+          0.449879388960581,
+          0.6453084390630167
+        ],
+        "bottom_left": [
+          0.23836705041310144,
+          0.6932951104704035
+        ]
+      },
+      "corner_points": {
+        "top_left": [
+          909.8673095703125,
+          1618.154296875
+        ],
+        "top_right": [
+          1734.9637451171875,
+          1528.98876953125
+        ],
+        "bottom_right": [
+          1813.9136962890625,
+          1951.4127197265625
+        ],
+        "bottom_left": [
+          961.095947265625,
+          2096.5244140625
+        ]
+      }
+    },
+    {
+      "id": "display_3",
+      "complete": true,
+      "missing_corners": [],
+      "corners": {
+        "top_left": [
+          0.5215872507246714,
+          0.43338230678013395
+        ],
+        "top_right": [
+          0.732854752313523,
+          0.43870814893611526
+        ],
+        "bottom_right": [
+          0.7393157595679873,
+          0.6050691957826968
+        ],
+        "bottom_left": [
+          0.5168970501612103,
+          0.5932666031771867
+        ]
+      },
+      "corner_points": {
+        "top_left": [
+          2103.039794921875,
+          1310.548095703125
+        ],
+        "top_right": [
+          2954.870361328125,
+          1326.6534423828125
+        ],
+        "bottom_right": [
+          2980.921142578125,
+          1829.729248046875
+        ],
+        "bottom_left": [
+          2084.12890625,
+          1794.0382080078125
+        ]
+      }
+    },
+    {
+      "id": "display_4",
+      "complete": false,
+      "missing_corners": [
+        "top_right",
+        "bottom_right"
+      ],
+      "corners": null,
+      "corner_points": {
+        "top_left": [
+          3642.584716796875,
+          1689.370361328125
+        ],
+        "bottom_left": [
+          3533.365966796875,
+          2168.860595703125
+        ]
+      }
+    }
+  ]
+}

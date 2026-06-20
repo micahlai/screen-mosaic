@@ -1,0 +1,107 @@
+{
+  "captured_at": "2026-06-20T13:28:37",
+  "source_filename": "image.jpg",
+  "corner_mode": "outer",
+  "image_size": {
+    "width": 4032,
+    "height": 3024
+  },
+  "dictionary": "DICT_4X4_50",
+  "marker_count": 9,
+  "displays": [
+    {
+      "id": "display_1",
+      "complete": false,
+      "missing_corners": [
+        "top_left",
+        "top_right",
+        "bottom_right",
+        "bottom_left"
+      ],
+      "corners": null,
+      "corner_points": {}
+    },
+    {
+      "id": "display_2",
+      "complete": true,
+      "missing_corners": [],
+      "corners": {
+        "top_left": [
+          0.5970195588611421,
+          0.36842745826357887
+        ],
+        "top_right": [
+          0.9268712846059648,
+          0.39833363527974125
+        ],
+        "bottom_right": [
+          0.9046809484088232,
+          0.6722648660972635
+        ],
+        "bottom_left": [
+          0.5648084368024554,
+          0.5934882592902613
+        ]
+      },
+      "corner_points": {
+        "top_left": [
+          2407.182861328125,
+          1114.1246337890625
+        ],
+        "top_right": [
+          3737.14501953125,
+          1204.5609130859375
+        ],
+        "bottom_right": [
+          3647.673583984375,
+          2032.928955078125
+        ],
+        "bottom_left": [
+          2277.3076171875,
+          1794.70849609375
+        ]
+      }
+    },
+    {
+      "id": "display_3",
+      "complete": true,
+      "missing_corners": [],
+      "corners": {
+        "top_left": [
+          0.14271169995504712,
+          0.5669334855659929
+        ],
+        "top_right": [
+          0.24194811260889446,
+          0.2428624188458478
+        ],
+        "bottom_right": [
+          0.3923644111269996,
+          0.38534719477254875
+        ],
+        "bottom_left": [
+          0.26645978291829425,
+          0.6936198239604001
+        ]
+      },
+      "corner_points": {
+        "top_left": [
+          575.41357421875,
+          1714.4068603515625
+        ],
+        "top_right": [
+          975.5347900390625,
+          734.4159545898438
+        ],
+        "bottom_right": [
+          1582.0133056640625,
+          1165.2899169921875
+        ],
+        "bottom_left": [
+          1074.3658447265625,
+          2097.50634765625
+        ]
+      }
+    }
+  ]
+}
