@@ -1,0 +1,94 @@
+{
+  "captured_at": "2026-06-20T13:58:28",
+  "source_filename": "image.jpg",
+  "corner_mode": "outer",
+  "image_size": {
+    "width": 4032,
+    "height": 3024
+  },
+  "dictionary": "DICT_4X4_50",
+  "marker_count": 8,
+  "uv_bounds": {
+    "min_x": 1020.2714172363281,
+    "min_y": 554.5223419189454,
+    "max_x": 2080.3844665527345,
+    "max_y": 2314.746517944336
+  },
+  "displays": [
+    {
+      "id": "display_1",
+      "complete": false,
+      "missing_corners": [
+        "bottom_right"
+      ],
+      "corners": null,
+      "corner_points": {
+        "top_left": [
+          2514.91064453125,
+          2179.677978515625
+        ],
+        "top_right": [
+          2555.732177734375,
+          568.8764038085938
+        ],
+        "bottom_left": [
+          3537.239013671875,
+          2239.49853515625
+        ]
+      }
+    },
+    {
+      "id": "display_2",
+      "complete": true,
+      "missing_corners": [],
+      "corners": {
+        "top_left": [
+          0.264994636414543,
+          0.7333550024284887
+        ],
+        "top_right": [
+          0.2851864345489986,
+          0.21421822038277116
+        ],
+        "bottom_right": [
+          0.5040172395252046,
+          0.2098321864213893
+        ],
+        "bottom_left": [
+          0.4985999152773902,
+          0.7390001085069444
+        ]
+      },
+      "corner_points": {
+        "top_left": [
+          1068.4583740234375,
+          2217.66552734375
+        ],
+        "top_right": [
+          1149.8717041015625,
+          647.7958984375
+        ],
+        "bottom_right": [
+          2032.197509765625,
+          634.5325317382812
+        ],
+        "bottom_left": [
+          2010.3548583984375,
+          2234.736328125
+        ]
+      }
+    },
+    {
+      "id": "display_3",
+      "complete": false,
+      "missing_corners": [
+        "top_left",
+        "top_right",
+        "bottom_right",
+        "bottom_left"
+      ],
+      "corners": null,
+      "corner_points": {}
+    }
+  ]
+}

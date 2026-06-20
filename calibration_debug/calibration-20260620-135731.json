@@ -1,0 +1,94 @@
+{
+  "captured_at": "2026-06-20T13:57:31",
+  "source_filename": "image.jpg",
+  "corner_mode": "outer",
+  "image_size": {
+    "width": 4032,
+    "height": 3024
+  },
+  "dictionary": "DICT_4X4_50",
+  "marker_count": 7,
+  "uv_bounds": {
+    "min_x": 647.0212036132813,
+    "min_y": 408.0123825073242,
+    "max_x": 1883.7861694335938,
+    "max_y": 2557.1274795532227
+  },
+  "displays": [
+    {
+      "id": "display_1",
+      "complete": false,
+      "missing_corners": [
+        "bottom_right"
+      ],
+      "corners": null,
+      "corner_points": {
+        "top_left": [
+          2418.3203125,
+          2372.403076171875
+        ],
+        "top_right": [
+          2449.056396484375,
+          433.1590270996094
+        ],
+        "bottom_left": [
+          3584.440673828125,
+          2413.997314453125
+        ]
+      }
+    },
+    {
+      "id": "display_2",
+      "complete": true,
+      "missing_corners": [],
+      "corners": {
+        "top_left": [
+          0.1744141351609003,
+          0.8133070203993056
+        ],
+        "top_right": [
+          0.18036480555458675,
+          0.17748220130880044
+        ],
+        "bottom_right": [
+          0.4501367901998853,
+          0.1672286482715102
+        ],
+        "bottom_left": [
+          0.4532662649003286,
+          0.812712896437872
+        ]
+      },
+      "corner_points": {
+        "top_left": [
+          703.23779296875,
+          2459.4404296875
+        ],
+        "top_right": [
+          727.2308959960938,
+          536.7061767578125
+        ],
+        "bottom_right": [
+          1814.9515380859375,
+          505.6994323730469
+        ],
+        "bottom_left": [
+          1827.569580078125,
+          2457.643798828125
+        ]
+      }
+    },
+    {
+      "id": "display_3",
+      "complete": false,
+      "missing_corners": [
+        "top_left",
+        "top_right",
+        "bottom_right",
+        "bottom_left"
+      ],
+      "corners": null,
+      "corner_points": {}
+    }
+  ]
+}

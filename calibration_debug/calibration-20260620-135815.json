@@ -1,0 +1,94 @@
+{
+  "captured_at": "2026-06-20T13:58:15",
+  "source_filename": "image.jpg",
+  "corner_mode": "outer",
+  "image_size": {
+    "width": 4032,
+    "height": 3024
+  },
+  "dictionary": "DICT_4X4_50",
+  "marker_count": 7,
+  "uv_bounds": {
+    "min_x": 738.7209625244141,
+    "min_y": 516.7776824951172,
+    "max_x": 1933.0410614013672,
+    "max_y": 2584.5808990478517
+  },
+  "displays": [
+    {
+      "id": "display_1",
+      "complete": false,
+      "missing_corners": [
+        "bottom_right"
+      ],
+      "corners": null,
+      "corner_points": {
+        "top_left": [
+          2448.35546875,
+          2369.21484375
+        ],
+        "top_right": [
+          2425.330322265625,
+          520.4736328125
+        ],
+        "bottom_left": [
+          3578.911376953125,
+          2382.545166015625
+        ]
+      }
+    },
+    {
+      "id": "display_2",
+      "complete": true,
+      "missing_corners": [],
+      "corners": {
+        "top_left": [
+          0.19667863088940818,
+          0.8236077525628307
+        ],
+        "top_right": [
+          0.19924510471404544,
+          0.21641266030609294
+        ],
+        "bottom_right": [
+          0.4539931463816809,
+          0.2019737889527013
+        ],
+        "bottom_left": [
+          0.46596075996520026,
+          0.8149479457310268
+        ]
+      },
+      "corner_points": {
+        "top_left": [
+          793.0082397460938,
+          2490.58984375
+        ],
+        "top_right": [
+          803.3562622070312,
+          654.431884765625
+        ],
+        "bottom_right": [
+          1830.5003662109375,
+          610.7687377929688
+        ],
+        "bottom_left": [
+          1878.7537841796875,
+          2464.402587890625
+        ]
+      }
+    },
+    {
+      "id": "display_3",
+      "complete": false,
+      "missing_corners": [
+        "top_left",
+        "top_right",
+        "bottom_right",
+        "bottom_left"
+      ],
+      "corners": null,
+      "corner_points": {}
+    }
+  ]
+}

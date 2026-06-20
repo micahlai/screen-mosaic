@@ -62,7 +62,17 @@ app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024
 _lock = threading.Lock()
 _displays: "dict[str, dict]" = {}   # client_id -> display record
 _seq = 0
-_phase = "calibration"
+_phase = "mapping"                  # mapping by default; slaves wait for a photo
+_uv_bounds = None                   # global UV domain = bbox of all screen corners
+
+# Fraction of the screen-corner bounding box added as margin around the UV map.
+UV_MARGIN = 0.05
+
+# Optional content image mapped onto the UV space instead of the color gradient.
+_content_bytes = None
+_content_mime = "image/png"
+_content_version = 0
+_content_mode = "fill"   # "fill" = stretch to UV box | "fit" = preserve aspect
 
 
 def _register(client_id: str) -> dict:
@@ -147,7 +157,8 @@ DISPLAY_PAGE = r"""
   /* mapping layer */
   #uv { position: fixed; inset: 0; overflow: hidden; background: #000; display: none; }
   #uvquad { position: absolute; left: 0; top: 0; transform-origin: 0 0;
-            background-size: 100% 100%; image-rendering: auto; }
+            background-size: 100% 100%; image-rendering: auto; background: #000; }
+  #uvimg { position: absolute; display: none; }
   #uvmsg { position: fixed; inset: 0; display: none; align-items: center;
            justify-content: center; text-align: center; background: #111;
            color: #fff; font: 600 18px system-ui; padding: 24px; }
@@ -165,7 +176,7 @@ DISPLAY_PAGE = r"""
     <div class="corner br" data-slot="bottom_right"></div>
     <div class="corner bl" data-slot="bottom_left"></div>
   </div>
-  <div id="uv"><div id="uvquad"></div></div>
+  <div id="uv"><div id="uvquad"><img id="uvimg" alt=""></div></div>
   <div id="uvmsg">This screen was not fully captured.<br>Go back to calibration and recapture.</div>
 
 <script>
@@ -173,7 +184,7 @@ const S = 1000;                         // virtual size of the UV source quad
 const ORDER = ["top_left","top_right","bottom_right","bottom_left"];
 const LABELS = {top_left:"Top-Left", top_right:"Top-Right",
                 bottom_right:"Bottom-Right", bottom_left:"Bottom-Left"};
-let DISPLAY_ID = null, LAST = null;
+let DISPLAY_ID = null, LAST = null, GRAD = null;
 
 function clientId() {
   let id = localStorage.getItem("calib_client_id");
@@ -231,8 +242,9 @@ async function register(){
     el.innerHTML = `<img src="/marker/${marker_id}.png" alt="marker ${marker_id}">` +
                    `<span class="dbg">${LABELS[slot]} · ID ${marker_id}</span>`;
   }
-  document.getElementById("uvquad").style.backgroundImage = `url(${uvDataURL()})`;
-  poll(); setInterval(poll, 1200);
+  GRAD = uvDataURL();
+  document.getElementById("uvimg").addEventListener("load", renderUV);
+  poll(); setInterval(poll, 1000);
   window.addEventListener("resize", renderUV);
 }
 
@@ -260,28 +272,35 @@ function showCalibration(s){
 function showMapping(s){
   document.getElementById("cal").style.display = "none";
   document.getElementById("incomplete").style.display = "none";
-  if (!(s.captured && s.complete && s.corner_points)){
-    document.getElementById("uv").style.display = "none";
-    document.getElementById("uvmsg").style.display = "flex";
+  const uv = document.getElementById("uv"), msg = document.getElementById("uvmsg");
+  if (!s.captured){
+    uv.style.display = "none"; msg.style.display = "flex";
+    msg.innerHTML = "Waiting for phone picture…";
     return;
   }
-  document.getElementById("uvmsg").style.display = "none";
-  document.getElementById("uv").style.display = "block";
+  if (!(s.complete && s.corner_points)){
+    uv.style.display = "none"; msg.style.display = "flex";
+    msg.innerHTML = "This screen was not fully captured.<br>Take the photo again.";
+    return;
+  }
+  msg.style.display = "none"; uv.style.display = "block";
   renderUV();
 }
 
 function renderUV(){
   if (!(LAST && LAST.phase==="mapping" && LAST.complete && LAST.corner_points)) return;
   const W = window.innerWidth, H = window.innerHeight;
-  const iw = LAST.image_size.width, ih = LAST.image_size.height;
-  // source = this screen's photo corners in the virtual UV space [0..S]
+  // UV domain = bounding box of all screens' corners (+ margin), shared by every
+  // slave so the extreme top-right screen point — not the photo corner — is red.
+  const b = LAST.uv_bounds ||
+    {min_x:0, min_y:0, max_x:LAST.image_size.width, max_y:LAST.image_size.height};
+  const bw = b.max_x - b.min_x, bh = b.max_y - b.min_y;
   const src = ORDER.map(slot => {
     const [px,py] = LAST.corner_points[slot];
-    return [px/iw*S, py/ih*S];
+    return [(px - b.min_x)/bw*S, (py - b.min_y)/bh*S];
   });
   const dst = [[0,0],[W,0],[W,H],[0,H]];      // the physical screen rectangle
-  const Hm = homography(src, dst);            // photo(UV space) -> screen
-  const m = Hm;
+  const m = homography(src, dst);             // photo(UV space) -> screen
   const q = document.getElementById("uvquad");
   q.style.width = S+"px"; q.style.height = S+"px";
   // CSS matrix3d (column-major) for the 2D homography with z=0
@@ -290,6 +309,29 @@ function renderUV(){
     `${m[0][1]},${m[1][1]},0,${m[2][1]},` +
     `0,0,1,0,` +
     `${m[0][2]},${m[1][2]},0,${m[2][2]})`;
+
+  // Fill the UV box with either an uploaded image or the color gradient.
+  const img = document.getElementById("uvimg");
+  if (LAST.content && LAST.content.url){
+    q.style.backgroundImage = "none";
+    if (img.dataset.url !== LAST.content.url){
+      img.dataset.url = LAST.content.url; img.src = LAST.content.url; // load -> renderUV
+    }
+    img.style.display = "block";
+    if (LAST.content.mode === "fit" && img.naturalWidth){
+      // preserve the image aspect inside the (possibly non-square) UV box
+      const sc = Math.min(bw/img.naturalWidth, bh/img.naturalHeight);
+      const wf = img.naturalWidth*sc/bw, hf = img.naturalHeight*sc/bh;
+      img.style.left = (1-wf)/2*S+"px"; img.style.top = (1-hf)/2*S+"px";
+      img.style.width = wf*S+"px";      img.style.height = hf*S+"px";
+    } else {                              // "fill": stretch across the whole UV box
+      img.style.left = "0px"; img.style.top = "0px";
+      img.style.width = S+"px"; img.style.height = S+"px";
+    }
+  } else {
+    img.style.display = "none";
+    q.style.backgroundImage = `url(${GRAD})`;
+  }
 }
 
 register();
@@ -319,10 +361,15 @@ def status(display_id: str):
         return jsonify({"error": "unknown display"}), 404
     with _lock:
         phase = _phase
+        bounds = _uv_bounds
+        content = (None if _content_bytes is None else
+                   {"url": f"/content/image?v={_content_version}", "mode": _content_mode})
     cap = d["capture"]
     if cap is None:
-        return jsonify({"captured": False, "phase": phase})
-    return jsonify({"captured": True, "phase": phase, **cap})
+        return jsonify({"captured": False, "phase": phase,
+                        "uv_bounds": bounds, "content": content})
+    return jsonify({"captured": True, "phase": phase,
+                    "uv_bounds": bounds, "content": content, **cap})
 
 
 # ---------------------------------------------------------------------------
@@ -349,12 +396,58 @@ def set_phase():
 
 @app.post("/reset")
 def reset():
-    global _seq, _phase
+    global _seq, _phase, _uv_bounds, _content_bytes, _content_version
     with _lock:
         _displays.clear()
         _seq = 0
-        _phase = "calibration"
+        _phase = "mapping"
+        _uv_bounds = None
+        _content_bytes = None
+        _content_version = 0
     return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# Content image mapped onto the UV space
+# ---------------------------------------------------------------------------
+
+@app.post("/content")
+def upload_content():
+    global _content_bytes, _content_mime, _content_version, _content_mode
+    file = request.files.get("file")
+    if file is None or file.filename == "":
+        return jsonify({"error": "No image uploaded"}), 400
+    mode = request.form.get("mode", "fill")
+    if mode not in ("fill", "fit"):
+        mode = "fill"
+    with _lock:
+        _content_bytes = file.read()
+        _content_mime = file.mimetype or "image/png"
+        _content_mode = mode
+        _content_version += 1
+        version = _content_version
+    return jsonify({"ok": True, "version": version, "mode": mode})
+
+
+@app.post("/content/mode")
+def set_content_mode():
+    global _content_mode
+    body = request.get_json(silent=True) or {}
+    mode = body.get("mode")
+    if mode not in ("fill", "fit"):
+        return jsonify({"error": "mode must be 'fill' or 'fit'"}), 400
+    with _lock:
+        _content_mode = mode
+    return jsonify({"mode": mode})
+
+
+@app.get("/content/image")
+def content_image():
+    with _lock:
+        data, mime = _content_bytes, _content_mime
+    if data is None:
+        return jsonify({"error": "no content image"}), 404
+    return send_file(io.BytesIO(data), mimetype=mime)
 
 
 # ---------------------------------------------------------------------------
@@ -408,21 +501,42 @@ PHONE_PAGE = r"""
     <img id="preview" alt="preview"><canvas id="overlay"></canvas>
   </div>
   <div id="status" class="status"></div>
-  <pre id="json" style="display:none"></pre>
+  <details id="debug" style="display:none; margin-top:14px;">
+    <summary style="cursor:pointer; font-weight:600; font-size:14px;">Debug information</summary>
+    <pre id="json"></pre>
+  </details>
 
   <hr>
   <div class="phase">Current phase: <b id="phaseName">…</b></div>
-  <button class="btn green" id="toMapping">✅ End Calibration → Mapping</button>
-  <button class="btn grey" id="toCalib">↩︎ Redo / Back to Calibration</button>
+  <button class="btn green" id="toMapping">🗺️ Show UV Map (mapping)</button>
+  <button class="btn grey" id="toCalib">🔳 Show ArUco markers (calibration)</button>
+
+  <hr>
+  <h2 style="font-size:17px; margin-bottom:0">Map an image to the screens</h2>
+  <p class="sub">Warped per screen so it looks straight from the camera's position.</p>
+  <input id="content" type="file" accept="image/*">
+  <label class="btn" for="content">🖼️ Upload Image to Map</label>
+  <div style="margin-top:12px; font-size:15px;">
+    <label><input type="radio" name="cmode" value="fill" checked> Fill (stretch)</label>
+    &nbsp;&nbsp;&nbsp;
+    <label><input type="radio" name="cmode" value="fit"> Fit (keep aspect)</label>
+  </div>
+  <div id="cstatus" class="status"></div>
 
 <script>
 const preview=document.getElementById('preview'), overlay=document.getElementById('overlay'),
       stage=document.getElementById('stage'), statusEl=document.getElementById('status'),
-      out=document.getElementById('json'), phaseName=document.getElementById('phaseName');
+      out=document.getElementById('json'), debug=document.getElementById('debug'),
+      phaseName=document.getElementById('phaseName');
 const ORDER=['top_left','top_right','bottom_right','bottom_left'];
 
 function handle(input){ input.addEventListener('change',()=>{ const f=input.files[0]; if(f) send(f);}); }
 handle(document.getElementById('camera')); handle(document.getElementById('library'));
+
+// Tapping a capture button opens the ArUco markers on every screen so the photo
+// captures them; we revert to the UV map after a successful capture.
+['camera','library'].forEach(id=>
+  document.querySelector(`label[for="${id}"]`).addEventListener('click',()=>setPhase('calibration')));
 
 async function refreshPhase(){
   const {phase}=await (await fetch('/phase')).json();
@@ -435,6 +549,26 @@ async function setPhase(p){
 }
 document.getElementById('toMapping').onclick=()=>setPhase('mapping');
 document.getElementById('toCalib').onclick=()=>setPhase('calibration');
+
+// --- map an image onto the UV space ---
+const contentInput=document.getElementById('content'), cstatus=document.getElementById('cstatus');
+const currentMode=()=>document.querySelector('input[name=cmode]:checked').value;
+contentInput.addEventListener('change', async ()=>{
+  const f=contentInput.files[0]; if(!f) return;
+  const fd=new FormData(); fd.append('file',f); fd.append('mode',currentMode());
+  cstatus.textContent='Uploading…'; cstatus.className='status';
+  try{
+    const res=await fetch('/content',{method:'POST',body:fd});
+    const d=await res.json(); if(!res.ok) throw new Error(d.error||'Failed');
+    setPhase('mapping');
+    cstatus.innerHTML=`<span class="ok">✓ Mapped image (${d.mode})</span>`;
+  }catch(e){ cstatus.innerHTML=`<span class="err">${e.message}</span>`; }
+});
+document.querySelectorAll('input[name=cmode]').forEach(r=>r.addEventListener('change', async ()=>{
+  await fetch('/content/mode',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({mode:currentMode()})});
+  cstatus.innerHTML=`<span class="ok">Mode: ${currentMode()}</span>`;
+}));
 
 async function send(file){
   statusEl.textContent='Detecting markers…'; statusEl.className='status';
@@ -451,7 +585,8 @@ async function send(file){
     statusEl.innerHTML=`<span class="ok">✓ Saved ${data.saved_as}</span> — `+
       `${data.result.marker_count} markers, ${n} complete`+
       (bad?`, <span class="err">${bad} incomplete</span>`:'');
-    out.style.display='block'; out.textContent=JSON.stringify(data.result,null,2);
+    debug.style.display='block'; out.textContent=JSON.stringify(data.result,null,2);
+    setPhase('mapping');   // back to the UV map now that we have corners
   }catch(e){ statusEl.innerHTML=`<span class="err">${e.message}</span>`; }
 }
 
@@ -548,10 +683,27 @@ def calibrate():
             "captured_at": datetime.datetime.now().isoformat(timespec="seconds"),
         }
 
+    # UV domain = bounding box of every captured screen corner (+ margin), so the
+    # UV map spans only the region the screens actually cover, not the whole photo.
+    global _uv_bounds
+    all_pts = [pt for d in displays_out if d["complete"]
+               for pt in d["corner_points"].values()]
+    if all_pts:
+        xs = [p[0] for p in all_pts]
+        ys = [p[1] for p in all_pts]
+        min_x, max_x, min_y, max_y = min(xs), max(xs), min(ys), max(ys)
+        mx, my = (max_x - min_x) * UV_MARGIN, (max_y - min_y) * UV_MARGIN
+        bounds = {"min_x": min_x - mx, "min_y": min_y - my,
+                  "max_x": max_x + mx, "max_y": max_y + my}
+    else:
+        bounds = None
+    with _lock:
+        _uv_bounds = bounds
+
     result = {
         "image_size": {"width": int(width), "height": int(height)},
         "dictionary": dict_name, "marker_count": len(markers),
-        "displays": displays_out,
+        "uv_bounds": bounds, "displays": displays_out,
     }
 
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
