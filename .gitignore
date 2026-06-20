@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+test_image.png
+annotated.png
+*.png
+!docs/*.png
