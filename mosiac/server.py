@@ -527,7 +527,7 @@ def _particle_loop():
         if ok:
             with _lock:
                 _particle_frame = buf.tobytes()
-        time.sleep(0.04)   # ~25 fps
+        time.sleep(0.005)  # render is the limiter at high resolution
 
 
 def _ensure_particle_thread():
