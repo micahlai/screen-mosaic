@@ -70,6 +70,11 @@ def create(name, width, height):
     return _REGISTRY[name](width, height)
 
 
+def supports_pointer(name):
+    """True if the named visualization reacts to a cursor force (set_pointer)."""
+    return hasattr(_REGISTRY.get(name), "set_pointer")
+
+
 class Visualization:
     """Base class. Subclasses implement step() and render() -> HxWx3 uint8 BGR.
     The render canvas is (width, height) * RESOLUTION_SCALE."""
@@ -131,3 +136,4 @@ from . import gradients      # noqa: E402,F401
 # --- register built-in visualizations (importing each runs its @register) ---
 from . import particleflow   # noqa: E402,F401
 from . import smokesim       # noqa: E402,F401
+from . import smokesim2      # noqa: E402,F401

@@ -37,7 +37,10 @@ from __future__ import annotations
 import datetime
 import io
 import json
+import os
 import socket
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -103,6 +106,8 @@ _viz_ver = 0             # bumped each new rendered field
 _viz_cond = threading.Condition()
 _viz_size = None         # (w, h) the sim is currently running at
 _viz_started = False
+_pointer = None          # (nx, ny, nvx, nvy, ts) cursor force from the preview
+_preview_proc = None     # the preview-window subprocess
 
 # Live calibration state
 _live_source = "phone"   # "phone" (phone streams frames) | "server" (host camera)
@@ -644,7 +649,37 @@ def start_visualization():
             _viz_name = name
             _viz = None          # force the loop to rebuild with the new sim
     _ensure_viz_thread()
+    if visualizations.supports_pointer(name):
+        _ensure_preview()        # cursor-interactive preview window
     return jsonify({"ok": True, "kind": "visualization", "name": name, "mode": mode})
+
+
+@app.post("/viz/pointer")
+def viz_pointer():
+    """Cursor force from the preview window: x,y in [0,1] field coords + velocity."""
+    global _pointer
+    b = request.get_json(silent=True) or {}
+    try:
+        _pointer = (float(b["x"]), float(b["y"]),
+                    float(b.get("vx", 0.0)), float(b.get("vy", 0.0)), time.time())
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"error": "need x, y [, vx, vy]"}), 400
+    return jsonify({"ok": True})
+
+
+def _ensure_preview():
+    """Launch the desktop preview window (preview.py) once, if enabled."""
+    global _preview_proc
+    if not consts.SMOKE_PREVIEW:
+        return
+    if _preview_proc is not None and _preview_proc.poll() is None:
+        return
+    path = os.path.join(os.path.dirname(__file__), "preview.py")
+    url = f"http://127.0.0.1:{consts.PORT}"
+    try:
+        _preview_proc = subprocess.Popen([sys.executable, path, url])
+    except Exception as e:
+        print("preview launch failed:", e)
 
 
 @app.post("/content/clear")
@@ -748,6 +783,11 @@ def _viz_loop():
         if _viz is None or _viz_size != size:
             _viz = visualizations.create(_viz_name, size[0], size[1])
             _viz_size = size
+        # feed the cursor force to the sim (if it accepts one and it's recent)
+        if hasattr(_viz, "set_pointer"):
+            p = _pointer
+            _viz.set_pointer((p[0], p[1], p[2], p[3])
+                             if (p and time.time() - p[4] < 0.2) else None)
         _viz.step()
         frame = _viz.render()                 # raw BGR field; warped per-screen later
         with _viz_cond:
@@ -1008,8 +1048,8 @@ function refreshContentUI(){
   const t=contentType.value;
   vizName.style.display   = t==='viz'  ? 'block' : 'none';
   uploadBtn.style.display = t==='image'? 'block' : 'none';
-  // gradient selector only when the Smoke visualization is chosen
-  gradName.style.display  = (t==='viz' && vizName.value==='smoke') ? 'block' : 'none';
+  // gradient selector only for the smoke visualizations
+  gradName.style.display  = (t==='viz' && vizName.value.startsWith('smoke')) ? 'block' : 'none';
   // fill/fit only applies to a static image; UV map & visualizations are
   // already generated at the required resolution/aspect.
   document.getElementById('modeRow').style.display = t==='image' ? 'block' : 'none';

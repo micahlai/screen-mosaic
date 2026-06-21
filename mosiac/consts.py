@@ -26,3 +26,9 @@ CAMERA_INDEX = 0           # cv2.VideoCapture index for the "server" camera sour
 # only affect live mode; the one-off phone photo still auto-detects + refines.
 LIVE_DICT = "DICT_4X4_50"  # marker dictionary used on the screens
 LIVE_MAX_WIDTH = 1280      # downscale live frames to at most this width before detect
+
+# --- Smoke preview ---
+# When the Smoke visualization is active, auto-open a desktop preview window
+# (preview.py) showing the full cast field; drag the cursor in it to push/swirl
+# the smoke (the same sim the screens render, so they react too).
+SMOKE_PREVIEW = True
