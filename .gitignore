@@ -6,6 +6,7 @@ test_image.png
 annotated.png
 *.png
 !docs/*.png
+!read-me-images/**
 calibration_debug/
 mosiac/calibration_debug/
 *.pt
