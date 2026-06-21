@@ -1,4 +1,4 @@
-# Mosaic
+# Screen Mosaic
 
 ![Mosaic](read-me-images/1.png)
 
