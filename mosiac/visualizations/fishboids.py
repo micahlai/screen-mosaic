@@ -154,18 +154,18 @@ class FishBoids(Visualization):
 
     USES_HANDS   = True          # the YOLO hand tracker is the "shark" the fish flee
     N            = 220
-    VISUAL_RANGE = 75.0
+    VISUAL_RANGE = 45.0
     SEP_RANGE    = 22.0
-    MAX_SPEED    = 6.5
+    MAX_SPEED    = 8.5
     MIN_SPEED    = 1.8
-    W_COH        = 0.0040
-    W_ALI        = 0.048
-    W_SEP        = 0.12
-    W_WANDER     = 0.038
-    FLEE_RANGE   = 170.0
-    W_FLEE       = 7.5
+    W_COH        = 0.0020
+    W_ALI        = 0.028
+    W_SEP        = 0.16
+    W_WANDER     = 0.068
+    FLEE_RANGE   = 190.0
+    W_FLEE       = 18.5
     EAT_RADIUS   = 34.0
-    EDGE_MARGIN  = 90.0          # steer away from walls within this (logical px)
+    EDGE_MARGIN  = 60.0          # steer away from walls within this (logical px)
     W_EDGE       = 0.6           # edge-avoidance strength
 
     def __init__(self, width, height):
