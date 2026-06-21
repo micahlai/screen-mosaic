@@ -948,7 +948,7 @@ PHONE_PAGE = r"""
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-<title>Calibration Capture</title>
+<title>The Screen Mosaic</title>
 <style>
   :root { color-scheme: light dark; }
   * { box-sizing: border-box; }
