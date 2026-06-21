@@ -9,10 +9,12 @@ where the photo was taken — every screen lines up into one continuous image.
 
 ## Gallery
 
-| | |
-|---|---|
-| ![](read-me-images/2.png) | ![](read-me-images/3.PNG) |
-| ![](read-me-images/4.png) | ![](read-me-images/5.png) |
+<p align="center">
+  <img src="read-me-images/2.png" height="200">
+  <img src="read-me-images/3.PNG" height="200">
+  <img src="read-me-images/4.png" height="200">
+  <img src="read-me-images/5.png" height="200">
+</p>
 
 ## Run the host
 
