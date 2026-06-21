@@ -18,7 +18,9 @@ import time
 
 import numpy as np
 
-WRIST_KEYPOINTS = (9, 10)   # COCO pose: left/right wrist
+# COCO pose has no finger keypoints, so we extrapolate the hand position beyond
+# the wrist along the forearm (elbow -> wrist). (elbow, wrist) per side:
+ARM_PAIRS = ((7, 9), (8, 10))   # left, right
 _model = None
 _is_coreml = False
 
@@ -47,8 +49,10 @@ def _get_model(imgsz, use_coreml):
     return _model
 
 
-def _detect(model, frame, device, conf, imgsz):
-    """Detect people; return [(box, [wrist (x,y), ...]), ...] in frame pixels."""
+def _detect(model, frame, device, conf, imgsz, finger_extend=0.4):
+    """Detect people; return [(box, [hand (x,y), ...]), ...] in frame pixels.
+    Hand points are the wrist pushed `finger_extend` of the forearm length past
+    the wrist (toward the fingers)."""
     res = model.predict(frame, imgsz=imgsz, conf=conf, max_det=6,
                         verbose=False, device=device)[0]
     boxes = (res.boxes.xyxy.cpu().numpy()
@@ -60,10 +64,17 @@ def _detect(model, frame, device, conf, imgsz):
         cf = res.keypoints.conf
         cf = cf.cpu().numpy() if cf is not None else np.ones(xy.shape[:2])
         for p in range(xy.shape[0]):
-            ws = [(float(xy[p, w, 0]), float(xy[p, w, 1])) for w in WRIST_KEYPOINTS
-                  if cf[p, w] > conf and (xy[p, w] > 0).all()]
+            hands_ = []
+            for elbow, wrist in ARM_PAIRS:
+                if cf[p, wrist] <= conf or not (xy[p, wrist] > 0).all():
+                    continue
+                wx, wy = xy[p, wrist]
+                if cf[p, elbow] > conf and (xy[p, elbow] > 0).all():
+                    ex, ey = xy[p, elbow]
+                    wx, wy = wx + finger_extend * (wx - ex), wy + finger_extend * (wy - ey)
+                hands_.append((float(wx), float(wy)))
             box = boxes[p].tolist() if p < len(boxes) else None
-            persons.append((box, ws))
+            persons.append((box, hands_))
     return persons
 
 
@@ -128,7 +139,8 @@ def _draw_debug(frame, boxes, wrists, cur, roi):
 
 
 def run(should_run, on_hand, on_debug=None, camera_index=0, fps=12, device="cpu",
-        conf=0.3, imgsz=320, roi_imgsz=192, cam_width=960, use_coreml=True):
+        conf=0.3, imgsz=320, roi_imgsz=192, cam_width=960, use_coreml=True,
+        finger_extend=0.4):
     """Camera loop. While should_run() is true, detect+track hands and call
     on_hand((cx, cy, vx, vy)) with the current hand in normalized camera coords
     (+ velocity), or on_hand(None). on_debug (if given) gets an annotated frame."""
@@ -174,7 +186,7 @@ def run(should_run, on_hand, on_debug=None, camera_index=0, fps=12, device="cpu"
                 if not _is_coreml:        # CoreML input size is fixed at export
                     det_imgsz = roi_imgsz
         try:
-            persons = _detect(model, sub, device, conf, det_imgsz)
+            persons = _detect(model, sub, device, conf, det_imgsz, finger_extend)
         except Exception:
             persons = []
 

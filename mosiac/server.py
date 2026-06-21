@@ -730,7 +730,8 @@ def _ensure_hands_thread():
                     camera_index=consts.CAMERA_INDEX, fps=consts.HAND_FPS,
                     device=consts.HAND_DEVICE, conf=consts.HAND_CONF,
                     imgsz=consts.HAND_IMGSZ, roi_imgsz=consts.HAND_ROI_IMGSZ,
-                    cam_width=consts.HAND_CAM_WIDTH, use_coreml=consts.HAND_COREML),
+                    cam_width=consts.HAND_CAM_WIDTH, use_coreml=consts.HAND_COREML,
+                    finger_extend=consts.HAND_FINGER_EXTEND),
         daemon=True).start()
 
 

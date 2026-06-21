@@ -27,8 +27,8 @@ class SmokeSim(Visualization):
     USES_HANDS = True               # driven by the YOLO hand tracker (not a cursor)
     POINTER_RADIUS = 0.12           # hand influence radius, fraction of grid long side
     POINTER_PUSH = 2.0              # how hard the hand pushes smoke along its motion
-    HAND_MARKER_FRAC = 0.06         # hand-marker radius, fraction of render long side
-    HAND_MARKER_ALPHA = 0.3         # 30% opacity black circle at the hand position
+    HAND_MARKER_FRAC = 0.02         # hand-marker ring radius, fraction of render long side
+    HAND_MARKER_ALPHA = 0.3         # 30% opacity black ring at the hand position
 
     def __init__(self, width, height):
         super().__init__(width, height)
@@ -183,14 +183,14 @@ class SmokeSim(Visualization):
         return self._draw_hand(out)
 
     def _draw_hand(self, frame):
-        """Draw a 30%-opacity black circle where the hand currently is."""
+        """Draw a 30%-opacity black ring where the hand currently is."""
         if self._ptr is None:
             return frame
         nx, ny = self._ptr[0], self._ptr[1]
         cx, cy = int(nx * self.w), int(ny * self.h)
-        r = max(2, int(self.HAND_MARKER_FRAC * max(self.w, self.h)))
+        r = max(3, int(self.HAND_MARKER_FRAC * max(self.w, self.h)))
         overlay = frame.copy()
-        cv2.circle(overlay, (cx, cy), r, (0, 0, 0), -1, cv2.LINE_AA)
+        cv2.circle(overlay, (cx, cy), r, (0, 0, 0), max(2, r // 3), cv2.LINE_AA)
         cv2.addWeighted(overlay, self.HAND_MARKER_ALPHA,
                         frame, 1 - self.HAND_MARKER_ALPHA, 0, dst=frame)
         return frame
