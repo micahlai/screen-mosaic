@@ -10,7 +10,7 @@ import colorsys
 import numpy as np
 import cv2
 
-from . import Visualization, register, boids_update, blend_roi
+from . import Visualization, register, boids_update, blend_roi, blur_down
 try:                       # `python -m mosiac` (package context)
     from .. import consts
 except ImportError:        # `python mosiac` (mosiac dir on sys.path -> top-level)
@@ -69,37 +69,37 @@ def draw_fish(img, glow_layer, x, y, angle, hue, spd, sz, sc, max_speed):
     # --- translucent body fill (globalAlpha=0.18), drawn in a sprite-sized ROI ---
     blend_roi(img, ecx, ecy, max(rx, ry) + 2,
               lambda m, ox, oy: cv2.ellipse(m, (ecx - ox, ecy - oy), (rx, ry),
-                                            ang_deg, 0, 360, fill, -1, cv2.LINE_AA),
+                                            ang_deg, 0, 360, fill, -1, cv2.LINE_8),
               0.18, 1.0)
 
     # --- stroked outline + tail + fin onto glow_layer (simulates shadowBlur=4) ---
     lw = max(1, int(1.2 * sc))
-    cv2.ellipse(glow_layer, (ecx, ecy), (rx, ry), ang_deg, 0, 360, col, lw, cv2.LINE_AA)
+    cv2.ellipse(glow_layer, (ecx, ecy), (rx, ry), ang_deg, 0, 360, col, lw, cv2.LINE_8)
 
     # forked tail: (-9,0)→(-17,-7) and (-9,0)→(-17,7)
     tail_root = _lw(-9,  0, x, y, ca, sa, sz, sc)
-    cv2.line(glow_layer, tail_root, _lw(-17, -7, x, y, ca, sa, sz, sc), col, lw, cv2.LINE_AA)
-    cv2.line(glow_layer, tail_root, _lw(-17,  7, x, y, ca, sa, sz, sc), col, lw, cv2.LINE_AA)
+    cv2.line(glow_layer, tail_root, _lw(-17, -7, x, y, ca, sa, sz, sc), col, lw, cv2.LINE_8)
+    cv2.line(glow_layer, tail_root, _lw(-17,  7, x, y, ca, sa, sz, sc), col, lw, cv2.LINE_8)
 
     # dorsal fin: (-2,-5.5)→(2,-9)→(5,-5.5)
     fin = np.array([_lw(-2, -5.5, x, y, ca, sa, sz, sc),
                     _lw( 2, -9,   x, y, ca, sa, sz, sc),
                     _lw( 5, -5.5, x, y, ca, sa, sz, sc)], dtype=np.int32)
-    cv2.polylines(glow_layer, [fin], False, col, max(1, int(sc)), cv2.LINE_AA)
+    cv2.polylines(glow_layer, [fin], False, col, max(1, int(sc)), cv2.LINE_8)
 
     # --- eye (drawn on img directly) ---
     ep = _lw(5.5, -1.6, x, y, ca, sa, sz, sc)
     er = max(1, int(1.5 * s))
-    cv2.circle(img, ep, er, col, -1, cv2.LINE_AA)
+    cv2.circle(img, ep, er, col, -1, cv2.LINE_8)
     hp = _lw(6.0, -2.1, x, y, ca, sa, sz, sc)
     hr = max(1, int(0.55 * s))
-    cv2.circle(img, hp, hr, (200, 200, 200), -1, cv2.LINE_AA)
+    cv2.circle(img, hp, hr, (200, 200, 200), -1, cv2.LINE_8)
 
     # --- smile bezier: (2.5,1)→(4.2,3.2)→(6.5,1) ---
     smile_local = _bezier((2.5, 1), (4.2, 3.2), (6.5, 1), n=8)
     smile_world = np.array([_lw(px_ * sz, py_ * sz, x, y, ca, sa, 1, sc)
                              for px_, py_ in smile_local], dtype=np.int32)
-    cv2.polylines(img, [smile_world], False, col, max(1, int(sc)), cv2.LINE_AA)
+    cv2.polylines(img, [smile_world], False, col, max(1, int(sc)), cv2.LINE_8)
 
 
 
@@ -155,6 +155,7 @@ class FishBoids(Visualization):
     USES_HANDS          = True    # hand position drives the predator the fish flee
     HAND_TRACKER        = "red"   # use red-sticker CV tracking, not YOLO
     NEEDS_PHONE_CAMERA  = True    # phone must stream frames whenever this viz is active
+    RENDER_LONG  = 1440          # vector art -> render at 1440; slaves downsample
     N            = 220
     VISUAL_RANGE = 40.0
     SEP_RANGE    = 30.0
@@ -330,7 +331,7 @@ class FishBoids(Visualization):
         # Blur glow and composite (matches shadowBlur=4 → sigma=4*sc)
         sig = max(1.0, 4.0 * sc)
         ks  = max(3, int(sig * 2)) | 1
-        glow_blur = cv2.GaussianBlur(glow_layer, (ks, ks), sig)
+        glow_blur = blur_down(glow_layer, sig)
         cv2.addWeighted(img, 1.0, glow_blur, 0.8, 0, img)
 
         # Burst particles

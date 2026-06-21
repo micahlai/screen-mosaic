@@ -13,7 +13,7 @@ import colorsys
 import numpy as np
 import cv2
 
-from . import Visualization, register, boids_update, blend_roi
+from . import Visualization, register, boids_update, blend_roi, blur_down
 
 
 # ---------------------------------------------------------------------------
@@ -68,35 +68,35 @@ def draw_bird(img, glow_layer, x, y, angle, hue, spd, sz, sc, max_speed, flap):
 
     blend_roi(img, ecx, ecy, max(rx, ry) + 2,
               lambda m, ox, oy: cv2.ellipse(m, (ecx - ox, ecy - oy), (rx, ry),
-                                            ang_deg, 0, 360, fill, -1, cv2.LINE_AA),
+                                            ang_deg, 0, 360, fill, -1, cv2.LINE_8),
               0.20, 1.0)
-    cv2.ellipse(glow_layer, (ecx, ecy), (rx, ry), ang_deg, 0, 360, col, lw, cv2.LINE_AA)
+    cv2.ellipse(glow_layer, (ecx, ecy), (rx, ry), ang_deg, 0, 360, col, lw, cv2.LINE_8)
 
     # swept-back wings — droop modulated by flap
     wing_y = 9 + flap * 3.5   # ±3.5 px droop
     wing_root = _lw(-1,  0,     x, y, ca, sa, sz, sc)
-    cv2.line(glow_layer, wing_root, _lw(-11, -wing_y, x, y, ca, sa, sz, sc), col, lw, cv2.LINE_AA)
-    cv2.line(glow_layer, wing_root, _lw(-11,  wing_y, x, y, ca, sa, sz, sc), col, lw, cv2.LINE_AA)
+    cv2.line(glow_layer, wing_root, _lw(-11, -wing_y, x, y, ca, sa, sz, sc), col, lw, cv2.LINE_8)
+    cv2.line(glow_layer, wing_root, _lw(-11,  wing_y, x, y, ca, sa, sz, sc), col, lw, cv2.LINE_8)
     # secondary feather lines for thickness
-    cv2.line(glow_layer, wing_root, _lw(-7, -wing_y*0.6, x, y, ca, sa, sz, sc), col, lw, cv2.LINE_AA)
-    cv2.line(glow_layer, wing_root, _lw(-7,  wing_y*0.6, x, y, ca, sa, sz, sc), col, lw, cv2.LINE_AA)
+    cv2.line(glow_layer, wing_root, _lw(-7, -wing_y*0.6, x, y, ca, sa, sz, sc), col, lw, cv2.LINE_8)
+    cv2.line(glow_layer, wing_root, _lw(-7,  wing_y*0.6, x, y, ca, sa, sz, sc), col, lw, cv2.LINE_8)
 
     # tail fan (three lines)
     tail_base = _lw(-9, 0, x, y, ca, sa, sz, sc)
     for ty in (-4, 0, 4):
-        cv2.line(glow_layer, tail_base, _lw(-14, ty, x, y, ca, sa, sz, sc), col, lw, cv2.LINE_AA)
+        cv2.line(glow_layer, tail_base, _lw(-14, ty, x, y, ca, sa, sz, sc), col, lw, cv2.LINE_8)
 
     # beak spike
     beak_base = _lw(9, 0, x, y, ca, sa, sz, sc)
     beak_tip  = _lw(14, 0.5, x, y, ca, sa, sz, sc)
-    cv2.line(glow_layer, beak_base, beak_tip, col, max(1, int(sc)), cv2.LINE_AA)
+    cv2.line(glow_layer, beak_base, beak_tip, col, max(1, int(sc)), cv2.LINE_8)
 
     # eye
     ep = _lw(5.5, -1.0, x, y, ca, sa, sz, sc)
     er = max(1, int(1.2 * s))
-    cv2.circle(img, ep, er, col, -1, cv2.LINE_AA)
+    cv2.circle(img, ep, er, col, -1, cv2.LINE_8)
     hp = _lw(6.0, -1.4, x, y, ca, sa, sz, sc)
-    cv2.circle(img, hp, max(1, int(0.45 * s)), (210, 210, 210), -1, cv2.LINE_AA)
+    cv2.circle(img, hp, max(1, int(0.45 * s)), (210, 210, 210), -1, cv2.LINE_8)
 
 
 # ---------------------------------------------------------------------------
@@ -132,8 +132,8 @@ def draw_hawk(img, x, y, angle, sc):
         roi = img[gy0:gy1, gx0:gx1]
         glow = np.zeros_like(roi)
         for pts in wings:
-            cv2.fillPoly(glow, [pts - [gx0, gy0]], mid, cv2.LINE_AA)
-        glow = cv2.GaussianBlur(glow, (ks, ks), sc * 4)
+            cv2.fillPoly(glow, [pts - [gx0, gy0]], mid, cv2.LINE_8)
+        glow = blur_down(glow, sc * 4)
         img[gy0:gy1, gx0:gx1] = cv2.addWeighted(roi, 1.0, glow, 0.50, 0)
 
     # wing silhouettes
@@ -147,29 +147,29 @@ def draw_hawk(img, x, y, angle, sc):
                           lw_(-20, sign*22),
                           lw_(-24, sign*18),
                           lw_(-18, sign*24)], dtype=np.int32)
-        cv2.fillPoly(img, [inner], mid,  cv2.LINE_AA)
-        cv2.fillPoly(img, [outer], col,  cv2.LINE_AA)
+        cv2.fillPoly(img, [inner], mid,  cv2.LINE_8)
+        cv2.fillPoly(img, [outer], col,  cv2.LINE_8)
 
     # body fill (translucent)
     blend_roi(img, x, y, max(rx, ry) + 2,
               lambda m, ox, oy: cv2.ellipse(m, (x - ox, y - oy), (rx, ry),
-                                            math.degrees(angle), 0, 360, light, -1, cv2.LINE_AA),
+                                            math.degrees(angle), 0, 360, light, -1, cv2.LINE_8),
               0.20, 1.0)
     cv2.ellipse(img, (x, y), (rx, ry), math.degrees(angle), 0, 360, col,
-                max(1, int(1.5*sc)), cv2.LINE_AA)
+                max(1, int(1.5*sc)), cv2.LINE_8)
 
     # tail fan
     for ty in (-8, -4, 0, 4, 8):
-        cv2.line(img, lw_(-22, 0), lw_(-34, ty), col, max(1, int(sc)), cv2.LINE_AA)
+        cv2.line(img, lw_(-22, 0), lw_(-34, ty), col, max(1, int(sc)), cv2.LINE_8)
 
     # hooked beak
     bk = np.array([lw_(15, 0), lw_(22, 3), lw_(20, 5)], dtype=np.int32)
-    cv2.polylines(img, [bk], False, col, max(1, int(sc)), cv2.LINE_AA)
+    cv2.polylines(img, [bk], False, col, max(1, int(sc)), cv2.LINE_8)
 
     # eye
     ep = lw_(11, -2)
-    cv2.circle(img, ep, max(2, int(3*sc)), col,   -1, cv2.LINE_AA)
-    cv2.circle(img, ep, max(1, int(sc)),   light, -1, cv2.LINE_AA)
+    cv2.circle(img, ep, max(2, int(3*sc)), col,   -1, cv2.LINE_8)
+    cv2.circle(img, ep, max(1, int(sc)),   light, -1, cv2.LINE_8)
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +219,7 @@ class BirdBoids(Visualization):
         }
     }
 
+    RENDER_LONG  = 1440          # vector art -> render at 1440; slaves downsample
     N            = 220
     VISUAL_RANGE = 75.0
     SEP_RANGE    = 22.0
@@ -391,7 +392,7 @@ class BirdBoids(Visualization):
                       self.MAX_SPEED, flap)
 
         sig = max(1.0, 4.0*sc); ks = max(3, int(sig*2))|1
-        cv2.addWeighted(img, 1.0, cv2.GaussianBlur(glow_layer,(ks,ks),sig), 0.75, 0, img)
+        cv2.addWeighted(img, 1.0, blur_down(glow_layer, sig), 0.75, 0, img)
 
         for b in self._bursts:
             r_ = max(1, int(3.5*b['life']*sc)); a_ = b['life']**2

@@ -12,9 +12,9 @@ import cv2
 
 # HSV ranges tuned tightly for orange-red sticky note (hue ~5-6, sat ~190+, val ~140+)
 # Lower2/Upper2 is a narrow wrap-around safety net; the sticker barely touches hue 0
-_RED_LOWER1 = np.array([0,  180, 140],  dtype=np.uint8)
+_RED_LOWER1 = np.array([0,  190, 140],  dtype=np.uint8)
 _RED_UPPER1 = np.array([12, 255, 255],  dtype=np.uint8)
-_RED_LOWER2 = np.array([175, 180, 140], dtype=np.uint8)
+_RED_LOWER2 = np.array([175, 190, 140], dtype=np.uint8)
 _RED_UPPER2 = np.array([180, 255, 255], dtype=np.uint8)
 
 #SAT MIN 180 -> 160 to LOOSEN

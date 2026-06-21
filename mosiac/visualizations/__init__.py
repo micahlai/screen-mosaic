@@ -111,13 +111,17 @@ class Visualization:
     """
 
     viz_params: dict = {}   # override in subclass to expose phone-UI dropdowns
+    RENDER_LONG = None      # per-viz render long-side cap (None -> MAX_RENDER_LONG).
+                            # CPU-rendered vector viz (boids) set this low: the slaves
+                            # re-warp/downsample anyway, so 4K just wastes draw time.
 
     def __init__(self, width, height):
         # effective scale = RESOLUTION_SCALE, clamped so the long side <= the cap
+        cap = self.RENDER_LONG or MAX_RENDER_LONG
         eff = RESOLUTION_SCALE
         long = max(width, height) * eff
-        if long > MAX_RENDER_LONG:
-            eff *= MAX_RENDER_LONG / long
+        if long > cap:
+            eff *= cap / long
         self.scale = eff                       # sizes/speeds use the effective scale
         self.w = max(1, int(round(width * eff)))
         self.h = max(1, int(round(height * eff)))
@@ -262,6 +266,18 @@ def blend_roi(img, cx, cy, pad, draw, alpha, base_w=1.0):
     mask = np.zeros_like(roi)
     draw(mask, x0, y0)
     img[y0:y1, x0:x1] = cv2.addWeighted(mask, alpha, roi, base_w, 0)
+
+
+def blur_down(layer, sigma, down=4):
+    """Cheap large-radius blur for the soft glow layers: downsample, blur small,
+    upsample. The glow is low-frequency so this is ~identical at a fraction of the
+    cost of a full-resolution Gaussian."""
+    h, w = layer.shape[:2]
+    if min(h, w) < down * 2 or sigma < 1.5:
+        return cv2.GaussianBlur(layer, (0, 0), max(0.6, sigma))
+    small = cv2.resize(layer, (w // down, h // down), interpolation=cv2.INTER_AREA)
+    small = cv2.GaussianBlur(small, (0, 0), max(0.6, sigma / down))
+    return cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
 
 
 # --- gradient maps (used by the smoke viz) ---
