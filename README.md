@@ -1,5 +1,5 @@
 
-![Mosaic](read-me-images/1.png?v=2)
+![Mosaic](read-me-images/thumbnail.png?v=2)
 
 # Screen Mosaic
 
