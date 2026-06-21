@@ -882,6 +882,32 @@ def content_stream():
     return Response(gen(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
 
+def _screen_bottom_edges_norm():
+    """Each calibrated screen's bottom edge as a line segment ((u1,v1),(u2,v2))
+    normalized to the UV bounding box [0,1]. The "bottom" edge is the segment
+    between the two corners closest to the bottom of the simulation (largest v) —
+    not the calibration's bottom_left/bottom_right labels, which are wrong for a
+    rotated screen. Same uv mapping the per-screen warp uses, so a viz can scale
+    by its own field size."""
+    b = _uv_bounds
+    if not b:
+        return []
+    bw = (b["max_x"] - b["min_x"]) or 1e-6
+    bh = (b["max_y"] - b["min_y"]) or 1e-6
+    segs = []
+    for d in _displays.values():
+        cap = d.get("capture")
+        if not (cap and cap.get("complete")):
+            continue
+        pts = [((px - b["min_x"]) / bw, (py - b["min_y"]) / bh)
+               for (px, py) in cap["corner_points"].values()]
+        if len(pts) < 2:
+            continue
+        pts.sort(key=lambda uv: uv[1])      # ascending v (top of sim first)
+        segs.append((pts[-2], pts[-1]))     # the two bottom-most corners
+    return segs
+
+
 def _desired_viz_size():
     """Resolution matching the screens' bounding-box orientation/aspect."""
     b = _uv_bounds
@@ -919,6 +945,9 @@ def _viz_loop():
         if _viz is None or _viz_size != size:
             _viz = visualizations.create(_viz_name, size[0], size[1])
             _viz_size = size
+            # hand the screen bottom-edges to the viz once on load (perching, etc.)
+            if hasattr(_viz, "set_screens"):
+                _viz.set_screens(_screen_bottom_edges_norm())
         # feed the current hand's force to the sim (if it accepts one, recent)
         if hasattr(_viz, "set_pointer"):
             p = _pointer
