@@ -82,39 +82,33 @@ def _draw_debug(frame, cx, cy, contour, mask):
 
 
 def run(should_run, on_hand, on_debug=None,
-        camera_index=0, fps=20, cam_width=640, **_ignored):
-    """Camera loop — same signature as hands.run() (extra kwargs ignored).
+        get_frame=None, fps=20, **_ignored):
+    """Detection loop driven by phone frames.
 
-    Calls on_hand((cx, cy, vx, vy)) in normalized [0,1] coords each frame,
-    or on_hand(None) when no red blob is visible.
+    get_frame() -- callable that returns the latest BGR frame from the phone,
+                   or None if no frame has arrived yet.
+    Calls on_hand((cx, cy, vx, vy)) in normalized [0,1] coords, or on_hand(None).
     """
-    cap   = None
-    prev  = None
+    prev     = None
     interval = 1.0 / max(1, fps)
+    last_frame = None   # track frame identity to skip duplicates
 
     while True:
         if not should_run():
-            if cap is not None:
-                cap.release(); cap = None
             on_hand(None)
             time.sleep(0.2)
             continue
 
-        if cap is None:
-            cap = cv2.VideoCapture(camera_index)
-            if not cap.isOpened():
-                cap.release(); cap = None
-                time.sleep(0.6)
-                continue
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH,  cam_width)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, round(cam_width * 9 / 16))
-            prev = None
-
-        ok, frame = cap.read()
-        if not ok or frame is None:
+        frame = get_frame() if get_frame is not None else None
+        if frame is None:
             time.sleep(interval)
             continue
+
+        # Skip if it's the same frame object we already processed
+        if frame is last_frame:
+            time.sleep(interval)
+            continue
+        last_frame = frame
 
         H, W = frame.shape[:2]
         cx, cy, contour, mask = _find_red_centroid(frame)

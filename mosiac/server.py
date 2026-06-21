@@ -104,11 +104,15 @@ _viz_ver = 0             # bumped each new rendered field
 _viz_cond = threading.Condition()
 _viz_size = None         # (w, h) the sim is currently running at
 _viz_started = False
-# Hand-driven input (YOLO tracker -> current hand -> sim force)
+# Hand-driven input (tracker -> current hand -> sim force)
 _pointer = None          # (u, v, vu, vv, ts) in field coords, fed to the sim
 _current_hand = None     # latest current-hand info (for /hands/status)
 _hands_started = False
-_hands_debug = None      # latest annotated YOLO camera frame (JPEG bytes)
+_hands_debug = None      # latest annotated camera frame (JPEG bytes)
+
+# Latest raw frame from the phone (shared with red tracker)
+_latest_phone_frame = None
+_phone_frame_lock = threading.Lock()
 
 # Live calibration state
 _live_source = "phone"   # "phone" (phone streams frames) | "server" (host camera)
@@ -744,12 +748,14 @@ def _ensure_hands_thread():
 
     tracker_type = visualizations.hand_tracker(_viz_name)
     if tracker_type == "red":
+        def _get_phone_frame():
+            with _phone_frame_lock:
+                return _latest_phone_frame
         threading.Thread(
             target=red_tracker.run,
             kwargs=dict(should_run=should_run, on_hand=_on_hand,
                         on_debug=_on_hand_debug if consts.HAND_DEBUG else None,
-                        camera_index=consts.CAMERA_INDEX, fps=consts.HAND_FPS,
-                        cam_width=consts.HAND_CAM_WIDTH),
+                        get_frame=_get_phone_frame, fps=consts.HAND_FPS),
             daemon=True).start()
     else:
         threading.Thread(
@@ -1465,6 +1471,9 @@ def live_frame():
         return jsonify({"error": "could not decode frame"}), 400
     with _lock:
         _last_live_ts = time.time()
+    with _phone_frame_lock:
+        global _latest_phone_frame
+        _latest_phone_frame = image
     result = _live_detect(image)
     return jsonify({"marker_count": result["marker_count"]})
 
@@ -1486,6 +1495,9 @@ def ws_live_frames(ws):
             continue
         with _lock:
             _last_live_ts = time.time()
+        with _phone_frame_lock:
+            global _latest_phone_frame
+            _latest_phone_frame = image
         try:
             _live_detect(image)
         except Exception:
