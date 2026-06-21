@@ -11,6 +11,10 @@ import numpy as np
 import cv2
 
 from . import Visualization, register, boids_update, blend_roi
+try:                       # `python -m mosiac` (package context)
+    from .. import consts
+except ImportError:        # `python mosiac` (mosiac dir on sys.path -> top-level)
+    import consts
 
 
 # ---------------------------------------------------------------------------
@@ -98,71 +102,6 @@ def draw_fish(img, glow_layer, x, y, angle, hue, spd, sz, sc, max_speed):
     cv2.polylines(img, [smile_world], False, col, max(1, int(sc)), cv2.LINE_AA)
 
 
-# ---------------------------------------------------------------------------
-# Shark sprite  (matches drawShark() in boids.html)
-# ---------------------------------------------------------------------------
-
-def draw_shark(img, x, y, angle, sc):
-    """Draw the shark at render-pixel position (x,y) facing `angle`."""
-    ca, sa = math.cos(angle), math.sin(angle)
-    col   = (0xe0, 0xc8, 0x8c)   # #8cc8e0 in BGR
-    dark  = (0x4a, 0x3a, 0x1e)   # #1e3a4a in BGR
-    lw    = max(1, int(1.8 * sc))
-
-    def lw_(lx, ly):
-        return (int(x + (lx * ca - ly * sa) * sc),
-                int(y + (lx * sa + ly * ca) * sc))
-
-    rx = max(1, int(26 * sc)); ry = max(1, int(11 * sc))
-    ks = max(3, int(sc * 9)) | 1
-    # --- glow aura: translucent fill blurred (within an ROI incl. blur margin) ---
-    H, W = img.shape[:2]
-    pad = max(rx, ry) + ks
-    gx0, gy0 = max(0, x - pad), max(0, y - pad)
-    gx1, gy1 = min(W, x + pad), min(H, y + pad)
-    if gx1 > gx0 and gy1 > gy0:
-        roi = img[gy0:gy1, gx0:gx1]
-        glow = np.zeros_like(roi)
-        cv2.ellipse(glow, (x - gx0, y - gy0), (rx, ry), math.degrees(angle), 0, 360,
-                    col, max(2, int(sc * 2)), cv2.LINE_AA)
-        glow = cv2.GaussianBlur(glow, (ks, ks), sc * 4.5)
-        img[gy0:gy1, gx0:gx1] = cv2.addWeighted(roi, 1.0, glow, 0.55, 0)
-
-    # --- translucent body fill rgba(100,170,205,0.15) ---
-    blend_roi(img, x, y, max(rx, ry) + 2,
-              lambda m, ox, oy: cv2.ellipse(m, (x - ox, y - oy), (rx, ry),
-                                            math.degrees(angle), 0, 360,
-                                            (205, 170, 100), -1, cv2.LINE_AA),
-              0.15, 1.0)
-
-    # --- body outline ---
-    cv2.ellipse(img, (x, y), (rx, ry), math.degrees(angle), 0, 360, col, lw, cv2.LINE_AA)
-
-    # --- dorsal fin: (-6,-11)→(0,-26)→(10,-11) ---
-    fin_d = np.array([lw_(-6, -11), lw_(0, -26), lw_(10, -11)], dtype=np.int32)
-    cv2.polylines(img, [fin_d], False, col, max(1, int(1.5 * sc)), cv2.LINE_AA)
-
-    # --- pectoral fin: (4,11)→(-2,21)→(-10,11) ---
-    fin_p = np.array([lw_(4, 11), lw_(-2, 21), lw_(-10, 11)], dtype=np.int32)
-    cv2.polylines(img, [fin_p], False, col, max(1, int(1.5 * sc)), cv2.LINE_AA)
-
-    # --- tail: (-26,0)→(-40,±15) ---
-    tail_root = lw_(-26, 0)
-    cv2.line(img, tail_root, lw_(-40, -15), col, max(2, int(2 * sc)), cv2.LINE_AA)
-    cv2.line(img, tail_root, lw_(-40,  15), col, max(2, int(2 * sc)), cv2.LINE_AA)
-
-    # --- teeth zigzag ---
-    for sign in (1, -1):
-        teeth = np.array([lw_(18, sign*-3), lw_(22, sign*-1),
-                          lw_(24, sign*-4), lw_(26, sign*-1)], dtype=np.int32)
-        cv2.polylines(img, [teeth], False, dark, max(1, int(sc)), cv2.LINE_AA)
-
-    # --- eye ---
-    ep = lw_(13, -3.5)
-    cv2.circle(img, ep, max(2, int(3 * sc)), dark, -1, cv2.LINE_AA)
-    hp = lw_(14, -4.2)
-    cv2.circle(img, hp, max(1, int(sc)), (140, 140, 140), -1, cv2.LINE_AA)
-
 
 # ---------------------------------------------------------------------------
 # Background  (matches drawBackground() in boids.html)
@@ -213,6 +152,7 @@ class FishBoids(Visualization):
         }
     }
 
+    USES_HANDS   = True          # the YOLO hand tracker is the "shark" the fish flee
     N            = 220
     VISUAL_RANGE = 75.0
     SEP_RANGE    = 22.0
@@ -225,10 +165,8 @@ class FishBoids(Visualization):
     FLEE_RANGE   = 170.0
     W_FLEE       = 7.5
     EAT_RADIUS   = 34.0
-    SHARK_ACCEL    = 2.2
-    SHARK_MAX_SPD  = 28.0
-    SHARK_DRAG     = 0.88
-    SHARK_TURN     = 0.22
+    EDGE_MARGIN  = 90.0          # steer away from walls within this (logical px)
+    W_EDGE       = 0.6           # edge-avoidance strength
 
     def __init__(self, width, height):
         super().__init__(width, height)
@@ -263,11 +201,10 @@ class FishBoids(Visualization):
         self.sizes = (0.78 + rng.random(N) * 0.44).astype(np.float32)
         self.alive = np.ones(N, dtype=bool)
 
-        self.sx = float(self.w) / 2; self.sy = float(self.h) / 2
-        self.svx = 0.0; self.svy = 0.0
-        self.sangle = 0.0
-        self.shark_on = False
-        self._tw = 0.0
+        # the hand (YOLO tracker) is the predator the fish flee from
+        self._ptr = None
+        self.has_hand = False
+        self.sx = -1e9; self.sy = -1e9          # predator position (off until a hand)
 
         self._game_state = "waiting"
         self._start_t    = 0.0
@@ -285,13 +222,15 @@ class FishBoids(Visualization):
         if key == "mode":
             self._reset_game()
 
+    def set_pointer(self, ptr):
+        """Hand force (nx, ny, nvx, nvy) in [0,1] field coords, or None."""
+        self._ptr = ptr
+
     def _reset_game(self):
         N    = self.N; sc = self.scale
         self.alive[:] = True
         self._game_state = "waiting"; self._elapsed = 0.0; self._eaten = 0
-        self._bursts.clear(); self.shark_on = False
-        self.sx = float(self.w) / 2; self.sy = float(self.h) / 2
-        self.svx = 0.0; self.svy = 0.0
+        self._bursts.clear()
         rng  = np.random.default_rng()
         cols = round(math.sqrt(N * self.w / self.h))
         rows = math.ceil(N / cols)
@@ -300,51 +239,28 @@ class FishBoids(Visualization):
             self.bx[i] = (i % cols + 0.5 + (rng.random()-0.5)*0.85) * cw
             self.by[i] = (i // cols + 0.5 + (rng.random()-0.5)*0.85) * ch
 
-    # ------------------------------------------------------------------ cursor
-    def _cursor(self):
-        t  = self._tw
-        cx = self.w / 2 + self.w * 0.38 * math.sin(t * 0.53)
-        cy = self.h / 2 + self.h * 0.32 * math.sin(t * 0.79)
-        return cx, cy
-
     # ------------------------------------------------------------------ step
     def step(self):
         sc = self.scale
-        self._tw += 0.04
-        cx, cy = self._cursor()
-
-        # game-mode auto-start when shark "enters" (first cursor position available)
         mode = self._params.get("mode", "normal")
-        if not self.shark_on:
-            self.sx = cx; self.sy = cy; self.shark_on = True
-        if mode == "game" and self._game_state == "waiting":
+
+        # the hand (YOLO tracker) is the predator; fish flee its field position
+        if self._ptr is not None:
+            self.sx = self._ptr[0] * self.w
+            self.sy = self._ptr[1] * self.h
+            self.has_hand = True
+        else:
+            self.has_hand = False
+            self.sx = self.sy = -1e9          # no predator -> no flee / no eat
+        sx, sy = self.sx, self.sy
+
+        if mode == "game" and self._game_state == "waiting" and self.has_hand:
             self._game_state = "playing"; self._start_t = time.time()
         if mode == "game" and self._game_state == "playing":
             self._elapsed = time.time() - self._start_t
 
-        # shark update (same as HTML)
-        sx, sy = self.sx, self.sy
-        dx_, dy_ = cx - sx, cy - sy
-        dist = math.hypot(dx_, dy_)
-        if dist > 2:
-            ta   = math.atan2(dy_, dx_)
-            diff = ta - self.sangle
-            while diff >  math.pi: diff -= 2 * math.pi
-            while diff < -math.pi: diff += 2 * math.pi
-            self.sangle += math.copysign(min(abs(diff), self.SHARK_TURN), diff)
-            thr  = min(dist / 20, 1)
-            self.svx += math.cos(self.sangle) * self.SHARK_ACCEL * thr
-            self.svy += math.sin(self.sangle) * self.SHARK_ACCEL * thr
-        self.svx *= self.SHARK_DRAG; self.svy *= self.SHARK_DRAG
-        spd_ = math.hypot(self.svx, self.svy)
-        if spd_ > self.SHARK_MAX_SPD:
-            f = self.SHARK_MAX_SPD / spd_
-            self.svx *= f; self.svy *= f
-        self.sx += self.svx * sc; self.sy += self.svy * sc
-        sx, sy = self.sx, self.sy
-
-        # eat collision
-        if mode == "game" and self._game_state == "playing":
+        # eat collision (the hand eats fish it touches)
+        if mode == "game" and self._game_state == "playing" and self.has_hand:
             er2 = (self.EAT_RADIUS * sc) ** 2
             dxe = self.bx - sx; dye = self.by - sy
             eaten_now = self.alive & (dxe*dxe + dye*dye < er2)
@@ -355,14 +271,15 @@ class FishBoids(Visualization):
                 if self._eaten >= self.N:
                     self._game_state = "done"
 
-        # fish boids (vectorized; flee target = shark)
+        # fish boids (vectorized; flee target = the hand)
         self.bx, self.by, self.bvx, self.bvy = boids_update(
             self.bx, self.by, self.bvx, self.bvy, self.wander, self.alive, sx, sy,
             visual_range=self.VISUAL_RANGE, sep_range=self.SEP_RANGE,
             flee_range=self.FLEE_RANGE, min_speed=self.MIN_SPEED,
             max_speed=self.MAX_SPEED, w_coh=self.W_COH, w_ali=self.W_ALI,
             w_sep=self.W_SEP, w_wander=self.W_WANDER, w_flee=self.W_FLEE,
-            width=self.w, height=self.h, sc=sc)
+            width=self.w, height=self.h, sc=sc,
+            edge_margin=self.EDGE_MARGIN, w_edge=self.W_EDGE)
 
         # burst particles
         for b in self._bursts:
@@ -424,15 +341,23 @@ class FishBoids(Visualization):
                       lambda m, ox, oy: cv2.circle(m, (bx_ - ox, by_ - oy), r_, col, -1, cv2.LINE_AA),
                       a_, 1.0)
 
-        # Shark
-        if self.shark_on and self._game_state != "done":
-            draw_shark(img, int(self.sx), int(self.sy), self.sangle, sc)
+        # Hand marker (the "shark") — a translucent ring at the tracked position
+        if self.has_hand and self._game_state != "done":
+            self._draw_hand_circle(img, int(self.sx), int(self.sy), sc)
 
         # HUD
         if mode == "game":
             self._draw_hud(img, sc)
 
         return img
+
+    def _draw_hand_circle(self, img, cx, cy, sc):
+        """Translucent ring at the hand position (size from consts.FISH_HAND_MARKER_FRAC)."""
+        r = max(3, int(consts.FISH_HAND_MARKER_FRAC * max(self.w, self.h)))
+        blend_roi(img, cx, cy, r + max(2, r // 6) + 2,
+                  lambda m, ox, oy: cv2.circle(m, (cx - ox, cy - oy), r,
+                                               (235, 245, 255), max(2, r // 6), cv2.LINE_AA),
+                  0.5, 1.0)
 
     def _draw_hud(self, img, sc):
         font  = cv2.FONT_HERSHEY_SIMPLEX
@@ -444,7 +369,7 @@ class FishBoids(Visualization):
             cv2.putText(img, txt, (x, y), font, size * sc, col, max(1, int(th * sc)), cv2.LINE_AA)
 
         if state == "waiting":
-            txt = "Move cursor - shark gives chase. Eat all fish!"
+            txt = "Move your hand - the fish flee it. Catch them all!"
             tw  = cv2.getTextSize(txt, font, 0.5 * sc, max(1, int(sc)))[0][0]
             put(txt, (W - tw) // 2, int(H * 0.94), 0.5, (200, 235, 255))
         elif state == "playing":

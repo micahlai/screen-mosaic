@@ -174,10 +174,14 @@ def _blur(img, sigma):
 
 def boids_update(bx, by, bvx, bvy, wander, alive, pred_x, pred_y, *,
                  visual_range, sep_range, flee_range, min_speed, max_speed,
-                 w_coh, w_ali, w_sep, w_wander, w_flee, width, height, sc):
+                 w_coh, w_ali, w_sep, w_wander, w_flee, width, height, sc,
+                 edge_margin=0.0, w_edge=0.0):
     """Vectorized boids step (cohesion/alignment/separation/wander/flee). Replaces
     the O(N^2) Python double loop with numpy broadcasting. Updates `wander` in
-    place; returns new (bx, by, bvx, bvy)."""
+    place; returns new (bx, by, bvx, bvy).
+
+    edge_margin/w_edge (optional): steer boids away from the walls within
+    `edge_margin` (logical px) of an edge, strongest at the wall."""
     N = bx.shape[0]
     VR2 = (visual_range * sc) ** 2
     SR2 = (sep_range * sc) ** 2
@@ -215,6 +219,13 @@ def boids_update(bx, by, bvx, bvy, wander, alive, pred_x, pred_y, *,
     sd = np.sqrt(np.where(sd2 > 0, sd2, 1.0))
     p = np.where(flee, w_flee * np.clip(1 - sd / FR_px, 0, 1) ** 1.5 / sd, 0.0)
     fx += sxv * p; fy += syv * p
+
+    if edge_margin > 0.0 and w_edge > 0.0:          # steer away from the walls
+        m = edge_margin * sc
+        fx += np.where(bx < m,          w_edge * (1 - bx / m),            0.0)
+        fx += np.where(bx > width - m, -w_edge * (1 - (width - bx) / m),  0.0)
+        fy += np.where(by < m,          w_edge * (1 - by / m),            0.0)
+        fy += np.where(by > height - m, -w_edge * (1 - (height - by) / m), 0.0)
 
     bvx = bvx + fx; bvy = bvy + fy
     sp = np.hypot(bvx, bvy)

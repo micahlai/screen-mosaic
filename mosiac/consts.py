@@ -11,10 +11,15 @@ HTTPS_PORT = PORT + 1      # HTTPS port (only needed for the phone live camera)
 
 # --- Screen map ---
 # Fraction of the screen-corner bounding box added as margin around the UV map.
-UV_MARGIN = 0.01
+UV_MARGIN = 0.0
+
+# --- Fish boids ---
+# Radius of the hand "predator" circle the fish flee, as a fraction of the
+# rendered field's long side.
+FISH_HAND_MARKER_FRAC = 0.015
 
 # --- Marker sizes shown on the screen-slave pages (CSS pixels) ---
-MARKER_PX = 150            # normal calibration markers (phase "calibration")
+MARKER_PX = 200            # normal calibration markers (phase "calibration")
 LIVE_MARKER_PX = 90        # smaller markers kept on screen during live calibration
 
 # --- Live calibration ---
@@ -42,7 +47,7 @@ HAND_IMGSZ = 320           # full-frame inference size — lower = faster (e.g. 
 HAND_COREML = True         # on macOS, run the pose model on the Neural Engine (CoreML)
 HAND_ROI_IMGSZ = 192       # inference size once detection is cropped to the person
 HAND_CAM_WIDTH = 960       # camera capture width (lower = lower latency / less work)
-HAND_DEBUG = False          # compute + stream the annotated debug view (/hands/debug)
+HAND_DEBUG = True          # compute + stream the annotated debug view (/hands/debug)
 # COCO pose only gives wrists; push the tracked point this fraction of the
 # forearm length past the wrist toward the fingers (0 = wrist, ~0.4 = hand).
 HAND_FINGER_EXTEND = 0.4
