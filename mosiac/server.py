@@ -45,13 +45,16 @@ from pathlib import Path
 import cv2
 import numpy as np
 from flask import Flask, Response, jsonify, render_template_string, request, send_file
+from flask_sock import Sock
 
 try:                       # `python -m mosiac` / imported as a package
     from . import detector
     from . import visualizations
+    from . import consts
 except ImportError:        # `python mosiac` (directory on sys.path)
     import detector
     import visualizations
+    import consts
 
 MARKER_DICT = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
 MARKERS_PER_DISPLAY = 4
@@ -64,6 +67,7 @@ CORNER_LABELS = {"top_left": "Top-Left", "top_right": "Top-Right",
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024
+sock = Sock(app)
 
 # ---------------------------------------------------------------------------
 # Global state: dynamic display registry + current phase (in-memory)
@@ -92,6 +96,17 @@ _viz = None
 _viz_frame = None        # latest rendered JPEG bytes
 _viz_size = None         # (w, h) the sim is currently running at
 _viz_started = False
+
+# Live calibration state
+_live_source = "phone"   # "phone" (phone streams frames) | "server" (host camera)
+_last_live_ts = 0.0      # timestamp of the last frame the phone streamed in
+_camera_started = False  # server-camera thread started
+_camera_ok = False       # server camera currently producing frames
+_camera_err = None       # last server-camera error (for the phone to show)
+# Change-notification for WebSocket pushes: bumped whenever live corners change,
+# so slave sockets push a new warp only on actual updates (no polling).
+_live_cond = threading.Condition()
+_live_rev = 0
 
 
 def _register(client_id: str) -> dict:
@@ -154,7 +169,10 @@ DISPLAY_PAGE = r"""
                font-family: -apple-system, system-ui, sans-serif; }
   /* markers flush in the far corners, no margin */
   .corner { position: fixed; display: flex; align-items: center; gap: 8px; padding: 0; }
-  .corner img { width: 150px; height: 150px; image-rendering: pixelated; display: block; }
+  #markers { position: fixed; inset: 0; z-index: 4; display: none; }
+  #markers.nolabels .dbg { display: none; }   /* live mode: markers only, no ID tags */
+  .corner img { width: var(--mk, 150px); height: var(--mk, 150px);
+                image-rendering: pixelated; display: block; }
   .dbg { font: 600 14px/1.3 monospace; color: #000; background: #ffeb3b;
          padding: 4px 8px; border-radius: 4px; white-space: nowrap; }
   .tl { top: 0; left: 0; flex-direction: row; }
@@ -191,16 +209,20 @@ DISPLAY_PAGE = r"""
   <div id="cal">
     <div class="banner"><b id="title">registering…</b>
       <span id="subtitle">Open the phone app and capture this screen</span></div>
+  </div>
+  <div id="uv"><div id="uvquad"><img id="uvimg" alt=""></div></div>
+  <!-- markers live in their own layer so they can sit over the content in live mode -->
+  <div id="markers">
     <div class="corner tl" data-slot="top_left"></div>
     <div class="corner tr" data-slot="top_right"></div>
     <div class="corner br" data-slot="bottom_right"></div>
     <div class="corner bl" data-slot="bottom_left"></div>
   </div>
-  <div id="uv"><div id="uvquad"><img id="uvimg" alt=""></div></div>
   <div id="uvmsg">This screen was not fully captured.<br>Go back to calibration and recapture.</div>
 
 <script>
 const S = 1000;                         // virtual size of the UV source quad
+const MARKER_PX = {{ MARKER_PX }}, LIVE_MARKER_PX = {{ LIVE_MARKER_PX }}, LIVE_FPS = {{ LIVE_FPS }};
 const ORDER = ["top_left","top_right","bottom_right","bottom_left"];
 const LABELS = {top_left:"Top-Left", top_right:"Top-Right",
                 bottom_right:"Bottom-Right", bottom_left:"Bottom-Left"};
@@ -280,21 +302,53 @@ async function register(){
                    `<span class="dbg">${LABELS[slot]} · ID ${marker_id}</span>`;
   }
   document.getElementById("uvimg").addEventListener("load", renderUV);
-  poll(); setInterval(poll, 1000);
+  poll();   // self-scheduling (faster cadence while live)
   window.addEventListener("resize", renderUV);
 }
 
+// In live mode the server PUSHES corner updates over a WebSocket. Rendering is
+// driven ONLY by those pushes (which fire only when corners actually change), so
+// the warp never flickers — between updates the last frame just stays frozen.
+// The 1 s poll only handles phase transitions, not re-rendering.
+let cornersWS = null, liveRendered = false;
+function wsURL(path){ return (location.protocol==="https:"?"wss:":"ws:")+"//"+location.host+path; }
+function openCornersWS(){
+  if (cornersWS) return;
+  cornersWS = new WebSocket(wsURL("/live/corners/"+DISPLAY_ID));
+  cornersWS.onmessage = (ev)=>{ try{ LAST=JSON.parse(ev.data);
+    if(LAST.phase==="live"){ liveRendered=true; showLive(LAST); } }catch(e){} };
+  cornersWS.onclose = ()=>{ cornersWS=null; };
+  cornersWS.onerror = ()=>{ try{cornersWS.close();}catch(e){} };
+}
+function closeCornersWS(){ if(cornersWS){ try{cornersWS.close();}catch(e){} cornersWS=null; } liveRendered=false; }
+
 async function poll(){
-  if (!DISPLAY_ID) return;
-  const s = await (await fetch(`/status/${DISPLAY_ID}`)).json();
-  LAST = s;
-  if (s.phase === "mapping") showMapping(s); else showCalibration(s);
+  if (!DISPLAY_ID){ setTimeout(poll, 200); return; }
+  try{
+    const s = await (await fetch(`/status/${DISPLAY_ID}`)).json();
+    LAST = s;
+    if (s.phase === "live"){
+      openCornersWS();
+      if (!liveRendered) showLive(s);   // first paint only; WS drives the rest
+    } else {
+      closeCornersWS();
+      if (s.phase === "mapping") showMapping(s); else showCalibration(s);
+    }
+  }catch(e){}
+  setTimeout(poll, 1000);   // WS drives live warp updates; poll handles phase
+}
+
+function setMarkers(show, sizePx){
+  document.getElementById("markers").style.display = show ? "block" : "none";
+  if (show) document.documentElement.style.setProperty("--mk", sizePx + "px");
 }
 
 function showCalibration(s){
   document.getElementById("cal").style.display = "block";
   document.getElementById("uv").style.display = "none";
   document.getElementById("uvmsg").style.display = "none";
+  document.getElementById("markers").classList.remove("nolabels");
+  setMarkers(true, MARKER_PX);
   document.querySelectorAll(".corner").forEach(c=>c.classList.remove("missing","present"));
   const inc = document.getElementById("incomplete");
   if (!s.captured){ inc.style.display="none"; return; }
@@ -308,6 +362,7 @@ function showCalibration(s){
 function showMapping(s){
   document.getElementById("cal").style.display = "none";
   document.getElementById("incomplete").style.display = "none";
+  setMarkers(false);
   const uv = document.getElementById("uv"), msg = document.getElementById("uvmsg");
   if (!s.captured){
     uv.style.display = "none"; msg.style.display = "flex";
@@ -323,8 +378,28 @@ function showMapping(s){
   renderUV();
 }
 
+// Live calibration: small markers stay on screen for the camera; the warp
+// updates every poll. If this screen isn't seen this frame the server keeps the
+// last corners, so we keep showing the last warp instead of blanking.
+function showLive(s){
+  document.getElementById("cal").style.display = "none";
+  document.getElementById("incomplete").style.display = "none";
+  document.getElementById("markers").classList.add("nolabels");   // no ID tags in live
+  setMarkers(true, LIVE_MARKER_PX);   // markers must stay visible to the camera
+  document.querySelectorAll(".corner").forEach(c=>c.classList.remove("missing","present"));
+  const uv = document.getElementById("uv"), msg = document.getElementById("uvmsg");
+  if (s.captured && s.complete && s.corner_points){
+    msg.style.display = "none"; uv.style.display = "block";
+    renderUV();
+  } else {
+    uv.style.display = "none"; msg.style.display = "flex";
+    msg.innerHTML = "Live calibrating…<br>point the camera at this screen";
+  }
+}
+
 function renderUV(){
-  if (!(LAST && LAST.phase==="mapping" && LAST.complete && LAST.corner_points)) return;
+  if (!(LAST && (LAST.phase==="mapping" || LAST.phase==="live")
+        && LAST.complete && LAST.corner_points)) return;
   const W = window.innerWidth, H = window.innerHeight;
   // UV domain = bounding box of all screens' corners (+ margin), shared by every
   // slave so the extreme top-right screen point — not the photo corner — is red.
@@ -366,12 +441,15 @@ function renderUV(){
     }
   } else {
     img.style.display = "none";
-    // (re)build the gradient+checker for the current bounds so cells stay square
+    // (re)build the gradient+checker only when the box size changes — reassigning
+    // the background every frame causes a repaint flash (flicker).
     const key = `${Math.round(bw)}x${Math.round(bh)}`;
-    if (key !== GRAD_KEY){ GRAD = uvDataURL(b); GRAD_KEY = key; }
-    q.style.backgroundImage = `url(${GRAD})`;
-    q.style.backgroundSize = "100% 100%";   // fill the UV box exactly, no tiling
-    q.style.backgroundRepeat = "no-repeat";
+    if (key !== GRAD_KEY){
+      GRAD = uvDataURL(b); GRAD_KEY = key;
+      q.style.backgroundImage = `url(${GRAD})`;
+      q.style.backgroundSize = "100% 100%";   // fill the UV box exactly, no tiling
+      q.style.backgroundRepeat = "no-repeat";
+    }
   }
 }
 
@@ -384,7 +462,9 @@ register();
 
 @app.get("/display")
 def display():
-    return render_template_string(DISPLAY_PAGE)
+    return render_template_string(
+        DISPLAY_PAGE, MARKER_PX=consts.MARKER_PX,
+        LIVE_MARKER_PX=consts.LIVE_MARKER_PX, LIVE_FPS=consts.LIVE_FPS)
 
 
 @app.post("/register")
@@ -395,21 +475,29 @@ def register():
     return jsonify({"display_id": rec["display_id"], "slots": rec["slots"]})
 
 
-@app.get("/status/<display_id>")
-def status(display_id: str):
+def _status_payload(display_id: str):
+    """The status dict a slave needs to render. None if the display is unknown."""
     d = _display_by_id(display_id)
     if d is None:
-        return jsonify({"error": "unknown display"}), 404
+        return None
     with _lock:
         phase = _phase
         bounds = _uv_bounds
         content = _content_descriptor()
     cap = d["capture"]
     if cap is None:
-        return jsonify({"captured": False, "phase": phase,
-                        "uv_bounds": bounds, "content": content})
-    return jsonify({"captured": True, "phase": phase,
-                    "uv_bounds": bounds, "content": content, **cap})
+        return {"captured": False, "phase": phase,
+                "uv_bounds": bounds, "content": content}
+    return {"captured": True, "phase": phase,
+            "uv_bounds": bounds, "content": content, **cap}
+
+
+@app.get("/status/<display_id>")
+def status(display_id: str):
+    payload = _status_payload(display_id)
+    if payload is None:
+        return jsonify({"error": "unknown display"}), 404
+    return jsonify(payload)
 
 
 # ---------------------------------------------------------------------------
@@ -424,13 +512,19 @@ def get_phase():
 
 @app.post("/phase")
 def set_phase():
-    global _phase
+    global _phase, _uv_bounds
     body = request.get_json(silent=True) or {}
     phase = body.get("phase")
-    if phase not in ("calibration", "mapping"):
-        return jsonify({"error": "phase must be 'calibration' or 'mapping'"}), 400
+    if phase not in ("calibration", "mapping", "live"):
+        return jsonify({"error": "phase must be 'calibration', 'mapping' or 'live'"}), 400
     with _lock:
         _phase = phase
+        if phase == "live":
+            # live corners come from the phone's live camera feed — a different
+            # coordinate space than a prior still photo — so start fresh.
+            for rec in _displays.values():
+                rec["capture"] = None
+            _uv_bounds = None
     return jsonify({"phase": phase})
 
 
@@ -659,6 +753,17 @@ PHONE_PAGE = r"""
   <div class="phase">Current phase: <b id="phaseName">…</b></div>
   <button class="btn green" id="toMapping">🗺️ Show UV Map (mapping)</button>
   <button class="btn grey" id="toCalib">🔳 Show ArUco markers (calibration)</button>
+  <button class="btn" id="toLive" style="background:#ff3b30">🔴 Live calibration</button>
+  <div id="liveCtl" style="display:none">
+    <label class="lbl">Camera source</label>
+    <select id="liveSource" class="sel">
+      <option value="phone">Phone camera</option>
+      <option value="server">Server device camera</option>
+    </select>
+    <video id="livevideo" playsinline autoplay muted
+      style="width:100%;border-radius:12px;margin-top:10px;display:none;background:#000"></video>
+  </div>
+  <div id="livestatus" class="status"></div>
 
   <hr>
   <h2 style="font-size:17px; margin-bottom:0">Screen content</h2>
@@ -680,6 +785,10 @@ PHONE_PAGE = r"""
   <div id="cstatus" class="status"></div>
 
 <script>
+const LIVE_FPS = {{ LIVE_FPS }}, LIVE_MAX_WIDTH = {{ LIVE_MAX_WIDTH }},
+      HTTPS_PORT = {{ HTTPS_PORT }}, HTTPS_ENABLED = {{ USE_HTTPS }};
+function wsURL(path){ return (location.protocol==="https:"?"wss:":"ws:")+"//"+location.host+path; }
+let CURRENT_PHASE = 'mapping';
 const preview=document.getElementById('preview'), overlay=document.getElementById('overlay'),
       stage=document.getElementById('stage'), statusEl=document.getElementById('status'),
       out=document.getElementById('json'), debug=document.getElementById('debug'),
@@ -696,15 +805,82 @@ handle(document.getElementById('camera')); handle(document.getElementById('libra
 
 async function refreshPhase(){
   const {phase}=await (await fetch('/phase')).json();
-  phaseName.textContent=phase;
+  CURRENT_PHASE=phase; phaseName.textContent=phase;
 }
 async function setPhase(p){
   await fetch('/phase',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({phase:p})});
-  refreshPhase();
+  CURRENT_PHASE=p; await refreshPhase();
 }
-document.getElementById('toMapping').onclick=()=>setPhase('mapping');
-document.getElementById('toCalib').onclick=()=>setPhase('calibration');
+document.getElementById('toMapping').onclick=()=>{ stopLive(); setPhase('mapping'); };
+document.getElementById('toCalib').onclick=()=>{ stopLive(); setPhase('calibration'); };
+
+// --- live calibration: phone camera (streams frames) or server device camera ---
+const liveStatus=document.getElementById('livestatus'),
+      liveCtl=document.getElementById('liveCtl'),
+      liveSource=document.getElementById('liveSource'),
+      liveVideo=document.getElementById('livevideo');
+let livePoll=null, liveStream=null, liveSend=null, liveWS=null;
+
+function stopPhoneStream(){
+  if(liveSend){ clearInterval(liveSend); liveSend=null; }
+  if(liveWS){ try{liveWS.close();}catch(e){} liveWS=null; }
+  if(liveStream){ liveStream.getTracks().forEach(t=>t.stop()); liveStream=null; }
+  liveVideo.style.display='none';
+}
+async function startPhoneStream(){
+  stopPhoneStream();
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.isSecureContext){
+    const url = `https://${location.hostname}:${HTTPS_PORT}/phone`;
+    liveStatus.innerHTML = HTTPS_ENABLED
+      ? `<span class="err">Phone camera needs the secure page — <a href="${url}">open ${url}</a> and accept the warning (or use “Server device camera”).</span>`
+      : '<span class="err">Phone camera needs HTTPS (set USE_HTTPS in consts.py), or use “Server device camera”.</span>';
+    return;
+  }
+  try{
+    liveStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'},audio:false});
+  }catch(e){ liveStatus.innerHTML=`<span class="err">Camera blocked: ${e.message}</span>`; return; }
+  liveVideo.srcObject=liveStream; liveVideo.style.display='block';
+  try{ await liveVideo.play(); }catch(e){}
+  // stream JPEG frames over a WebSocket (downscaled to LIVE_MAX_WIDTH)
+  liveWS=new WebSocket(wsURL('/live/frames'));
+  const cv=document.createElement('canvas');
+  liveSend=setInterval(()=>{
+    if(!liveVideo.videoWidth || !liveWS || liveWS.readyState!==1) return;
+    const vw=liveVideo.videoWidth, vh=liveVideo.videoHeight;
+    const sc=Math.min(1, LIVE_MAX_WIDTH/vw);
+    cv.width=Math.round(vw*sc); cv.height=Math.round(vh*sc);
+    cv.getContext('2d').drawImage(liveVideo,0,0,cv.width,cv.height);
+    cv.toBlob(b=>{ if(b && liveWS && liveWS.readyState===1) liveWS.send(b); },
+              'image/jpeg', 0.6);
+  }, Math.round(1000/LIVE_FPS));
+}
+async function applyLiveSource(){
+  const src=liveSource.value;
+  await fetch('/live/source',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({source:src})});
+  if(src==='phone') startPhoneStream(); else stopPhoneStream();
+}
+function stopLive(){
+  stopPhoneStream(); liveCtl.style.display='none';
+  if(livePoll){ clearInterval(livePoll); livePoll=null; } liveStatus.textContent='';
+}
+document.getElementById('toLive').onclick=async ()=>{
+  await setPhase('live');
+  liveCtl.style.display='block';
+  applyLiveSource();
+  if(!livePoll) livePoll=setInterval(async ()=>{
+    let s; try{ s=await (await fetch('/live/status')).json(); }catch(e){ return; }
+    if(!s.live){ stopLive(); return; }
+    if(s.source==='server' && !s.camera_ok)
+      liveStatus.innerHTML=`<span class="err">${s.error||'Server camera unavailable'}</span>`;
+    else if(s.camera_ok)
+      liveStatus.innerHTML=`<span class="ok">🔴 Live (${s.source}) — tracking at ${s.fps} fps</span>`;
+    else
+      liveStatus.innerHTML='Waiting for camera…';
+  }, 1000);
+};
+liveSource.addEventListener('change', applyLiveSource);
 
 // --- screen content: UV map / uploaded image / visualization ---
 const contentType=document.getElementById('contentType'),
@@ -732,10 +908,12 @@ function refreshContentUI(){
 }
 async function applyContent(){
   const t=contentType.value;
+  // content shows in both mapping and live; only switch to mapping if not live
+  const toMappingIfNeeded=()=>{ if(CURRENT_PHASE!=='live') setPhase('mapping'); };
   try{
     if(t==='uv'){
       await fetch('/content/clear',{method:'POST'});
-      cstatus.innerHTML='<span class="ok">UV map</span>'; setPhase('mapping');
+      cstatus.innerHTML='<span class="ok">UV map</span>'; toMappingIfNeeded();
     } else if(t==='viz'){
       // visualizations are rendered at the screens' aspect already -> always fill
       const res=await fetch('/content/visualization',{method:'POST',
@@ -743,7 +921,7 @@ async function applyContent(){
         body:JSON.stringify({name:vizName.value, mode:'fill'})});
       if(!res.ok) throw new Error('Failed');
       cstatus.innerHTML=`<span class="ok">✨ ${vizName.options[vizName.selectedIndex].text}</span>`;
-      setPhase('mapping');
+      toMappingIfNeeded();
     } else {
       cstatus.textContent='Choose an image…';
     }
@@ -760,7 +938,7 @@ contentInput.addEventListener('change', async ()=>{
   try{
     const res=await fetch('/content',{method:'POST',body:fd});
     const d=await res.json(); if(!res.ok) throw new Error(d.error||'Failed');
-    setPhase('mapping');
+    if(CURRENT_PHASE!=='live') setPhase('mapping');
     cstatus.innerHTML=`<span class="ok">✓ Mapped image (${d.mode})</span>`;
   }catch(e){ cstatus.innerHTML=`<span class="err">${e.message}</span>`; }
 });
@@ -822,12 +1000,117 @@ refreshPhase();
 
 @app.get("/phone")
 def phone():
-    return render_template_string(PHONE_PAGE)
+    return render_template_string(
+        PHONE_PAGE, LIVE_FPS=consts.LIVE_FPS,
+        LIVE_MAX_WIDTH=consts.LIVE_MAX_WIDTH,
+        HTTPS_PORT=consts.HTTPS_PORT,
+        USE_HTTPS=("true" if consts.USE_HTTPS else "false"))
 
 
 # ---------------------------------------------------------------------------
 # Calibration capture endpoint
 # ---------------------------------------------------------------------------
+
+def _detect_and_update(image, keep_missing, dictionary=None, refine=True):
+    """Detect markers in ``image``, update each display's stored corners, and
+    recompute the global UV bounds. Shared by the phone photo (/calibrate) and
+    the live feed.
+
+    keep_missing=True (live): if a display's four markers aren't all visible this
+    frame, leave its stored corners untouched — the screen keeps its last warp
+    instead of going blank. keep_missing=False (photo): store partial captures so
+    missing corners can be highlighted.
+
+    ``dictionary``/``refine`` are forwarded to the detector — the live path pins
+    the dictionary and skips sub-pixel refinement for speed.
+
+    Returns a per-display summary dict (the /calibrate response shape).
+    """
+    global _uv_bounds
+    # Live frames are downscaled before detection; coordinates stay consistent
+    # because everything downstream is normalized by this same image_size.
+    if keep_missing and image.shape[1] > consts.LIVE_MAX_WIDTH:
+        s = consts.LIVE_MAX_WIDTH / image.shape[1]
+        image = cv2.resize(image, (consts.LIVE_MAX_WIDTH, int(round(image.shape[0] * s))))
+    height, width = image.shape[:2]
+    markers, dict_name = detector.detect_markers(image, dictionary=dictionary, refine=refine)
+    by_id = {m["id"]: m for m in markers}
+
+    with _lock:
+        records = sorted(_displays.values(), key=lambda d: d["index"])
+
+    def corners_for(slots, centroid, only_present):
+        cp, status = {}, {}
+        for slot, mid in slots:
+            seen = mid in by_id and centroid is not None
+            if seen:
+                cp[slot] = detector._screen_point(by_id[mid], centroid, "outer")
+            status[slot] = {"marker_id": mid, "present": seen}
+        return cp, status
+
+    displays_out = []
+    changed = False
+    for rec in records:
+        slots = list(zip(detector.CORNER_SLOTS, rec["marker_ids"]))
+        present = [by_id[mid] for _, mid in slots if mid in by_id]
+        centroid = np.mean([m["center"] for m in present], axis=0) if present else None
+        complete = len(present) == len(slots)
+        missing = [s for s, mid in slots if mid not in by_id]
+
+        if complete:
+            cp, status = corners_for(slots, centroid, only_present=False)
+            rec["capture"] = {
+                "complete": True, "corners": status, "corner_points": cp,
+                "image_size": {"width": int(width), "height": int(height)},
+                "captured_at": datetime.datetime.now().isoformat(timespec="seconds"),
+            }
+            changed = True
+        elif not keep_missing:
+            cp, status = corners_for(slots, centroid, only_present=True)
+            rec["capture"] = {
+                "complete": False, "corners": status, "corner_points": cp,
+                "image_size": {"width": int(width), "height": int(height)},
+                "captured_at": datetime.datetime.now().isoformat(timespec="seconds"),
+            }
+        # else: live + not fully visible -> keep the previous capture as-is
+
+        cap = rec["capture"]
+        is_complete = bool(cap and cap["complete"])
+        norm = None
+        if is_complete:
+            iw, ih = cap["image_size"]["width"], cap["image_size"]["height"]
+            norm = {s: [p[0] / iw, p[1] / ih] for s, p in cap["corner_points"].items()}
+        displays_out.append({
+            "id": rec["display_id"], "complete": is_complete,
+            "missing_corners": missing, "corners": norm,
+            "corner_points": cap["corner_points"] if cap else {},
+        })
+
+    # UV domain = bbox of every *currently stored* complete screen (+ margin)
+    all_pts = [pt for rec in records if rec["capture"] and rec["capture"]["complete"]
+               for pt in rec["capture"]["corner_points"].values()]
+    if all_pts:
+        xs = [p[0] for p in all_pts]; ys = [p[1] for p in all_pts]
+        min_x, max_x, min_y, max_y = min(xs), max(xs), min(ys), max(ys)
+        mx, my = (max_x - min_x) * UV_MARGIN, (max_y - min_y) * UV_MARGIN
+        bounds = {"min_x": min_x - mx, "min_y": min_y - my,
+                  "max_x": max_x + mx, "max_y": max_y + my}
+    else:
+        bounds = None
+    with _lock:
+        _uv_bounds = bounds
+
+    # wake any live WebSocket pushers — only when corners actually changed
+    if changed:
+        global _live_rev
+        with _live_cond:
+            _live_rev += 1
+            _live_cond.notify_all()
+
+    return {"image_size": {"width": int(width), "height": int(height)},
+            "dictionary": dict_name, "marker_count": len(markers),
+            "uv_bounds": bounds, "displays": displays_out}
+
 
 @app.post("/calibrate")
 def calibrate():
@@ -840,71 +1123,7 @@ def calibrate():
     if image is None:
         return jsonify({"error": "Could not decode image"}), 400
 
-    height, width = image.shape[:2]
-    markers, dict_name = detector.detect_markers(image)
-    by_id = {m["id"]: m for m in markers}
-
-    with _lock:
-        records = sorted(_displays.values(), key=lambda d: d["index"])
-
-    displays_out = []
-    for rec in records:
-        slots = list(zip(detector.CORNER_SLOTS, rec["marker_ids"]))
-        present = [by_id[mid] for _, mid in slots if mid in by_id]
-        centroid = (np.mean([m["center"] for m in present], axis=0)
-                    if present else None)
-
-        corner_points, corners_norm, status_corners = {}, {}, {}
-        for slot, mid in slots:
-            ok = mid in by_id and centroid is not None
-            if ok:
-                # outer corner = the marker corner touching the real screen corner
-                pt = detector._screen_point(by_id[mid], centroid, "outer")
-                corner_points[slot] = pt
-                corners_norm[slot] = [pt[0] / width, pt[1] / height]
-            status_corners[slot] = {"marker_id": mid, "present": ok}
-
-        complete = len(present) == len(slots)
-        missing = [s for s, mid in slots if mid not in by_id]
-
-        displays_out.append({
-            "id": rec["display_id"], "complete": complete,
-            "missing_corners": missing,
-            "corners": corners_norm if complete else None,
-            "corner_points": corner_points,
-        })
-
-        # publish for the slave page to poll (used by both phases)
-        rec["capture"] = {
-            "complete": complete,
-            "corners": status_corners,
-            "corner_points": corner_points,
-            "image_size": {"width": int(width), "height": int(height)},
-            "captured_at": datetime.datetime.now().isoformat(timespec="seconds"),
-        }
-
-    # UV domain = bounding box of every captured screen corner (+ margin), so the
-    # UV map spans only the region the screens actually cover, not the whole photo.
-    global _uv_bounds
-    all_pts = [pt for d in displays_out if d["complete"]
-               for pt in d["corner_points"].values()]
-    if all_pts:
-        xs = [p[0] for p in all_pts]
-        ys = [p[1] for p in all_pts]
-        min_x, max_x, min_y, max_y = min(xs), max(xs), min(ys), max(ys)
-        mx, my = (max_x - min_x) * UV_MARGIN, (max_y - min_y) * UV_MARGIN
-        bounds = {"min_x": min_x - mx, "min_y": min_y - my,
-                  "max_x": max_x + mx, "max_y": max_y + my}
-    else:
-        bounds = None
-    with _lock:
-        _uv_bounds = bounds
-
-    result = {
-        "image_size": {"width": int(width), "height": int(height)},
-        "dictionary": dict_name, "marker_count": len(markers),
-        "uv_bounds": bounds, "displays": displays_out,
-    }
+    result = _detect_and_update(image, keep_missing=False)
 
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     saved_as = f"calibration-{stamp}.json"
@@ -913,6 +1132,155 @@ def calibrate():
          "source_filename": file.filename, "corner_mode": "outer", **result}, indent=2))
 
     return jsonify({"saved_as": saved_as, "result": result})
+
+
+# ---------------------------------------------------------------------------
+# Live calibration: the PHONE streams camera frames here; we re-detect each one
+# ---------------------------------------------------------------------------
+
+@app.get("/live/status")
+def live_status():
+    with _lock:
+        if _live_source == "server":
+            ok, err = _camera_ok, _camera_err
+        else:
+            ok, err = (time.time() - _last_live_ts) < 1.5, None
+        return jsonify({"live": _phase == "live", "source": _live_source,
+                        "camera_ok": ok, "error": err, "fps": consts.LIVE_FPS})
+
+
+@app.post("/live/source")
+def set_live_source():
+    """Choose where live frames come from: the phone or the host's own camera."""
+    global _live_source
+    body = request.get_json(silent=True) or {}
+    source = body.get("source")
+    if source not in ("phone", "server"):
+        return jsonify({"error": "source must be 'phone' or 'server'"}), 400
+    with _lock:
+        _live_source = source
+    if source == "server":
+        _ensure_camera_thread()
+    return jsonify({"source": source})
+
+
+def _live_detect(image):
+    """Live detection: pinned dictionary + no sub-pixel refine (fast path)."""
+    return _detect_and_update(image, keep_missing=True,
+                              dictionary=consts.LIVE_DICT, refine=False)
+
+
+def _decode_frame(buf: bytes):
+    arr = np.frombuffer(buf, np.uint8)
+    return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+
+
+@app.post("/live/frame")
+def live_frame():
+    """A single live camera frame from the phone (HTTP fallback to the WS)."""
+    global _last_live_ts
+    file = request.files.get("file")
+    if file is None:
+        return jsonify({"error": "no frame"}), 400
+    image = _decode_frame(file.read())
+    if image is None:
+        return jsonify({"error": "could not decode frame"}), 400
+    with _lock:
+        _last_live_ts = time.time()
+    result = _live_detect(image)
+    return jsonify({"marker_count": result["marker_count"]})
+
+
+# --- WebSockets (live mode only) --------------------------------------------
+
+@sock.route("/live/frames")
+def ws_live_frames(ws):
+    """Phone streams JPEG frames here (replaces per-frame POST)."""
+    global _last_live_ts
+    while True:
+        data = ws.receive()
+        if data is None:
+            break
+        if isinstance(data, str):      # ignore any text (e.g. pings)
+            continue
+        image = _decode_frame(data)
+        if image is None:
+            continue
+        with _lock:
+            _last_live_ts = time.time()
+        try:
+            _live_detect(image)
+        except Exception:
+            pass
+
+
+@sock.route("/live/corners/<display_id>")
+def ws_live_corners(ws, display_id):
+    """Push this display's warp to the slave whenever corners change — no poll."""
+    last_rev = -1
+    while True:
+        payload = _status_payload(display_id)
+        if payload is None:
+            break
+        try:
+            ws.send(json.dumps(payload))
+        except Exception:
+            break
+        # block until corners change (or 1 s keepalive / phase-change resync)
+        with _live_cond:
+            _live_cond.wait_for(lambda: _live_rev != last_rev, timeout=1.0)
+            last_rev = _live_rev
+
+
+def _camera_loop():
+    """Server-camera source: open a local camera and feed frames to detection.
+    Runs only while phase == live and the chosen source is 'server'."""
+    global _camera_ok, _camera_err
+    cap = None
+    interval = 1.0 / max(1, consts.LIVE_FPS)
+    while True:
+        if not (_phase == "live" and _live_source == "server"):
+            if cap is not None:
+                cap.release(); cap = None
+            with _lock:
+                _camera_ok = False
+            time.sleep(0.15)
+            continue
+        if cap is None:
+            cap = cv2.VideoCapture(consts.CAMERA_INDEX)
+            if not cap.isOpened():
+                cap.release(); cap = None
+                with _lock:
+                    _camera_ok = False
+                    _camera_err = ("Could not open server camera "
+                                   f"(index {consts.CAMERA_INDEX}). Grant the "
+                                   "terminal camera access in System Settings.")
+                time.sleep(0.6)
+                continue
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, consts.LIVE_MAX_WIDTH)
+        ok, frame = cap.read()
+        if not ok or frame is None:
+            with _lock:
+                _camera_ok = False
+            time.sleep(interval)
+            continue
+        with _lock:
+            _camera_ok = True
+            _camera_err = None
+        try:
+            _live_detect(frame)
+        except Exception:
+            pass
+        time.sleep(interval)
+
+
+def _ensure_camera_thread():
+    global _camera_started
+    with _lock:
+        if _camera_started:
+            return
+        _camera_started = True
+    threading.Thread(target=_camera_loop, daemon=True).start()
 
 
 # ---------------------------------------------------------------------------
@@ -929,8 +1297,12 @@ def index():
         f"<li>Phone capture + phase control: <a href='/phone'>/phone</a></li>"
         f"</ul>"
         f"<p style='font:14px system-ui;color:#666'>On the LAN open "
-        f"<code>http://{ip}:5001/display</code> on each screen and "
-        f"<code>http://{ip}:5001/phone</code> on the phone.</p>"
+        f"<code>http://{ip}:{consts.PORT}/display</code> on each screen and "
+        f"<code>http://{ip}:{consts.PORT}/phone</code> on the phone."
+        + (f" For the phone <b>live camera</b>, open the secure page "
+           f"<code>https://{ip}:{consts.HTTPS_PORT}/phone</code>."
+           if consts.USE_HTTPS else "")
+        + "</p>"
     )
 
 
@@ -946,13 +1318,30 @@ def _lan_ip() -> str:
 
 
 def main():
+    from werkzeug.serving import make_server
+
     ip = _lan_ip()
-    print("Mosiac host running. Open on the LAN:")
-    print(f"  Screen slave : http://{ip}:5001/display")
-    print(f"  Phone capture: http://{ip}:5001/phone")
-    print(f"Debug captures saved to: {DEBUG_DIR}")
-    # debug=False so the particle background thread isn't duplicated by the reloader
-    app.run(host="0.0.0.0", port=5001, threaded=True)
+    lines = ["Mosiac host running. Open on the LAN:",
+             f"  Screen slave : http://{ip}:{consts.PORT}/display",
+             f"  Phone        : http://{ip}:{consts.PORT}/phone"]
+    if consts.USE_HTTPS:
+        lines += [f"  Phone (live) : https://{ip}:{consts.HTTPS_PORT}/phone",
+                  "   ^ the phone live camera needs this secure URL; accept the",
+                  "     one-time self-signed-cert warning. Everything else uses HTTP."]
+    lines.append(f"Debug captures saved to: {DEBUG_DIR}")
+    print("\n".join(lines), flush=True)
+
+    # HTTPS (self-signed) runs alongside HTTP — only the phone live camera needs
+    # it; HTTP keeps working for the screens, photo calibration, and everything.
+    if consts.USE_HTTPS:
+        try:
+            https = make_server("0.0.0.0", consts.HTTPS_PORT, app,
+                                threaded=True, ssl_context="adhoc")
+            threading.Thread(target=https.serve_forever, daemon=True).start()
+        except Exception as e:
+            print(f"  (HTTPS disabled: {e})")
+
+    make_server("0.0.0.0", consts.PORT, app, threaded=True).serve_forever()
 
 
 if __name__ == "__main__":

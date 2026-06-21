@@ -65,18 +65,20 @@ CornerMode = str  # "center" | "inner" | "outer"
 # Low-level detection
 # ---------------------------------------------------------------------------
 
-def _build_detector(dictionary_id: int) -> "cv2.aruco.ArucoDetector":
+def _build_detector(dictionary_id: int, refine: bool = True) -> "cv2.aruco.ArucoDetector":
     dictionary = cv2.aruco.getPredefinedDictionary(dictionary_id)
     params = cv2.aruco.DetectorParameters()
-    # Sub-pixel corner refinement gives noticeably cleaner corner pixels,
-    # which matters because everything downstream keys off corner accuracy.
-    params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+    # Sub-pixel corner refinement gives noticeably cleaner corner pixels, which
+    # matters for a still photo; skip it on the live path where speed wins.
+    params.cornerRefinementMethod = (cv2.aruco.CORNER_REFINE_SUBPIX if refine
+                                     else cv2.aruco.CORNER_REFINE_NONE)
     return cv2.aruco.ArucoDetector(dictionary, params)
 
 
 def detect_markers(
     image: np.ndarray,
     dictionary: Optional[str] = None,
+    refine: bool = True,
 ) -> Tuple[List[dict], str]:
     """Detect every marker in ``image``.
 
@@ -88,8 +90,9 @@ def detect_markers(
     bottom-left in the marker's own frame. Coordinates are image pixels.
 
     If ``dictionary`` is given (a name from ``CANDIDATE_DICTIONARIES``) only
-    that family is used; otherwise every candidate family is tried and the one
-    with the most detections wins.
+    that family is used (much faster); otherwise every candidate family is tried
+    and the one with the most detections wins. ``refine=False`` skips sub-pixel
+    corner refinement for speed (used by the live loop).
     """
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
 
@@ -102,7 +105,7 @@ def detect_markers(
 
     best: Tuple[List[dict], str] = ([], "")
     for name, dict_id in candidates:
-        detector = _build_detector(dict_id)
+        detector = _build_detector(dict_id, refine=refine)
         corners, ids, _ = detector.detectMarkers(gray)
         if ids is None:
             continue

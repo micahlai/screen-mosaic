@@ -22,6 +22,11 @@ import cv2          # noqa: F401
 # --- adjust this ---------------------------------------------------------
 # Render-resolution multiplier (see README). 4.0 -> ~4K field at ~17 fps on MPS.
 RESOLUTION_SCALE = 8.0
+# Hard cap on the rendered long side. The slaves re-warp/downsample the stream
+# to their own screens, so rendering much past 4K wastes time on the JPEG encode
+# and tanks the frame-rate (8K ≈ 1.4 fps) while adding ~no visible sharpness.
+# Raise this only if you accept lower fps for a very wide multi-screen wall.
+MAX_RENDER_LONG = 3840
 # -------------------------------------------------------------------------
 
 try:
@@ -70,9 +75,14 @@ class Visualization:
     The render canvas is (width, height) * RESOLUTION_SCALE."""
 
     def __init__(self, width, height):
-        self.scale = RESOLUTION_SCALE
-        self.w = max(1, int(round(width * self.scale)))
-        self.h = max(1, int(round(height * self.scale)))
+        # effective scale = RESOLUTION_SCALE, clamped so the long side <= the cap
+        eff = RESOLUTION_SCALE
+        long = max(width, height) * eff
+        if long > MAX_RENDER_LONG:
+            eff *= MAX_RENDER_LONG / long
+        self.scale = eff                       # sizes/speeds use the effective scale
+        self.w = max(1, int(round(width * eff)))
+        self.h = max(1, int(round(height * eff)))
         self.t = 0.0
 
     def step(self):

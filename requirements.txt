@@ -3,3 +3,5 @@ numpy
 flask
 pillow
 torch
+flask-sock
+cryptography

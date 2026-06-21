@@ -45,6 +45,23 @@ The phone's *Content* dropdown offers UV map / Upload image / Visualization;
 picking Visualization reveals a second dropdown populated from whatever is
 registered in `visualization.py`.
 
+3. **Live calibration** — a camera continuously watches the screens and updates
+   each screen's warp live (default **12 fps**). Start it from the phone's
+   **🔴 Live calibration** button, then pick the **camera source**:
+   - *Phone camera* — the phone streams its own camera frames to the host.
+   - *Server device camera* — the host opens a local camera (`cv2.VideoCapture`).
+
+   Each screen keeps four *smaller* markers on screen (over the content, no ID
+   labels) so the camera can track them. If a screen isn't fully visible in a
+   frame, its warp holds at the last good value instead of blanking.
+
+   Browsers only allow camera access over a **secure context**, so the host
+   serves **HTTPS** with a self-signed cert (accept the one-time warning on each
+   device). Toggle with `USE_HTTPS` in `consts.py`.
+
+Tunables in `mosiac/consts.py`: `PORT`, `USE_HTTPS`, `MARKER_PX`,
+`LIVE_MARKER_PX`, `LIVE_FPS`, `CAMERA_INDEX`.
+
 ### Adding a visualization
 
 Drop a new file in `mosiac/visualizations/` and import it from that package's
