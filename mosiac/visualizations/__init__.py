@@ -60,8 +60,10 @@ def register(name, label=None):
 
 
 def available():
-    """List of {name, label} for every registered visualization."""
-    return [{"name": n, "label": c.viz_label} for n, c in _REGISTRY.items()]
+    """List of {name, label, needs_phone_camera} for every registered visualization."""
+    return [{"name": n, "label": c.viz_label,
+             "needs_phone_camera": bool(getattr(c, "NEEDS_PHONE_CAMERA", False))}
+            for n, c in _REGISTRY.items()]
 
 
 def create(name, width, height):

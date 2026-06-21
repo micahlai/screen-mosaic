@@ -1146,12 +1146,14 @@ const currentMode=()=>document.querySelector('input[name=cmode]:checked').value;
 
 // all viz param definitions loaded once at startup
 let _vizParamDefs = {};
+let _vizNeedsPhone = {};   // name -> bool: does this viz need the phone camera?
 
 // populate the visualization + gradient dropdowns from the server
 (async ()=>{
   try{
     const list=await (await fetch('/visualizations')).json();
     vizName.innerHTML=list.map(v=>`<option value="${v.name}">${v.label}</option>`).join('');
+    list.forEach(v=>{ _vizNeedsPhone[v.name]=!!v.needs_phone_camera; });
   }catch(e){}
   try{
     const g=await (await fetch('/gradients')).json();
@@ -1190,6 +1192,19 @@ vizParamMode.addEventListener('change', async ()=>{
     body:JSON.stringify({key:'mode', value:vizParamMode.value})});
   cstatus.innerHTML=`<span class="ok">Mode: ${vizParamMode.options[vizParamMode.selectedIndex].text}</span>`;
 });
+function _updatePhoneStreamForViz(){
+  // Auto-start phone stream if the selected viz needs the phone camera and we're
+  // not already in live mode (live mode manages its own stream).
+  const t=contentType.value, vn=vizName.value;
+  const needsPhone = t==='viz' && !!_vizNeedsPhone[vn];
+  const inLive = CURRENT_PHASE==='live';
+  if(needsPhone && !inLive && !liveStream){
+    startPhoneStream();
+  } else if(!needsPhone && !inLive && liveStream){
+    stopPhoneStream();
+  }
+}
+
 async function applyContent(){
   const t=contentType.value;
   // content shows in both mapping and live; only switch to mapping if not live
@@ -1210,6 +1225,7 @@ async function applyContent(){
       cstatus.textContent='Choose an image…';
     }
   }catch(e){ cstatus.innerHTML=`<span class="err">${e.message}</span>`; }
+  _updatePhoneStreamForViz();
 }
 contentType.addEventListener('change', ()=>{ refreshContentUI(); applyContent(); });
 vizName.addEventListener('change', ()=>{ refreshContentUI(); applyContent(); });

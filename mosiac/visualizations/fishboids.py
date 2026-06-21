@@ -152,8 +152,9 @@ class FishBoids(Visualization):
         }
     }
 
-    USES_HANDS   = True          # hand position drives the predator the fish flee
-    HAND_TRACKER = "red"         # use red-sticker CV tracking, not YOLO
+    USES_HANDS          = True    # hand position drives the predator the fish flee
+    HAND_TRACKER        = "red"   # use red-sticker CV tracking, not YOLO
+    NEEDS_PHONE_CAMERA  = True    # phone must stream frames whenever this viz is active
     N            = 220
     VISUAL_RANGE = 40.0
     SEP_RANGE    = 30.0
