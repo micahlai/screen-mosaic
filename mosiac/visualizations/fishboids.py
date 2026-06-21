@@ -159,7 +159,7 @@ class FishBoids(Visualization):
     SEP_RANGE    = 30.0
     MAX_SPEED    = 8.5
     MIN_SPEED    = 1.8
-    W_COH        = 0.0008
+    W_COH        = 0.0012
     W_ALI        = 0.018
     W_SEP        = 0.38
     W_WANDER     = 0.10
