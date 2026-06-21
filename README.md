@@ -1,6 +1,7 @@
-# Screen Mosaic
 
 ![Mosaic](read-me-images/1.png)
+
+# Screen Mosaic
 
 Turn several ordinary displays into one coordinated canvas using a single phone
 photo. Each screen shows four ArUco markers in its corners; you photograph them
