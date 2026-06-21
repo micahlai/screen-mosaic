@@ -76,8 +76,13 @@ def supports_pointer(name):
 
 
 def uses_hands(name):
-    """True if the visualization is driven by the YOLO hand tracker."""
+    """True if the visualization is driven by a hand tracker."""
     return bool(getattr(_REGISTRY.get(name), "USES_HANDS", False))
+
+
+def hand_tracker(name):
+    """Return the tracker type for this viz: 'yolo' (default) or 'red'."""
+    return getattr(_REGISTRY.get(name), "HAND_TRACKER", "yolo")
 
 
 def all_viz_params():

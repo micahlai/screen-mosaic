@@ -52,11 +52,13 @@ try:                       # `python -m mosiac` / imported as a package
     from . import visualizations
     from . import consts
     from . import hands
+    from . import red_tracker
 except ImportError:        # `python mosiac` (directory on sys.path)
     import detector
     import visualizations
     import consts
     import hands
+    import red_tracker
 
 MARKER_DICT = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
 MARKERS_PER_DISPLAY = 4
@@ -740,16 +742,26 @@ def _ensure_hands_thread():
                 and visualizations.uses_hands(_viz_name)
                 and not (_phase == "live" and _live_source == "server"))
 
-    threading.Thread(
-        target=hands.run,
-        kwargs=dict(should_run=should_run, on_hand=_on_hand,
-                    on_debug=_on_hand_debug if consts.HAND_DEBUG else None,
-                    camera_index=consts.CAMERA_INDEX, fps=consts.HAND_FPS,
-                    device=consts.HAND_DEVICE, conf=consts.HAND_CONF,
-                    imgsz=consts.HAND_IMGSZ, roi_imgsz=consts.HAND_ROI_IMGSZ,
-                    cam_width=consts.HAND_CAM_WIDTH, use_coreml=consts.HAND_COREML,
-                    finger_extend=consts.HAND_FINGER_EXTEND),
-        daemon=True).start()
+    tracker_type = visualizations.hand_tracker(_viz_name)
+    if tracker_type == "red":
+        threading.Thread(
+            target=red_tracker.run,
+            kwargs=dict(should_run=should_run, on_hand=_on_hand,
+                        on_debug=_on_hand_debug if consts.HAND_DEBUG else None,
+                        camera_index=consts.CAMERA_INDEX, fps=consts.HAND_FPS,
+                        cam_width=consts.HAND_CAM_WIDTH),
+            daemon=True).start()
+    else:
+        threading.Thread(
+            target=hands.run,
+            kwargs=dict(should_run=should_run, on_hand=_on_hand,
+                        on_debug=_on_hand_debug if consts.HAND_DEBUG else None,
+                        camera_index=consts.CAMERA_INDEX, fps=consts.HAND_FPS,
+                        device=consts.HAND_DEVICE, conf=consts.HAND_CONF,
+                        imgsz=consts.HAND_IMGSZ, roi_imgsz=consts.HAND_ROI_IMGSZ,
+                        cam_width=consts.HAND_CAM_WIDTH, use_coreml=consts.HAND_COREML,
+                        finger_extend=consts.HAND_FINGER_EXTEND),
+            daemon=True).start()
 
 
 @app.get("/hands/status")
@@ -761,7 +773,7 @@ def hands_status():
 
 @app.get("/hands/debug")
 def hands_debug():
-    """MJPEG stream of the YOLO camera feed with detections drawn (debug view).
+    """MJPEG stream of the camera feed with detections drawn (debug view).
     Open this URL in a browser tab while a hand-driven viz is active."""
     def gen():
         boundary = b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"

@@ -152,7 +152,8 @@ class FishBoids(Visualization):
         }
     }
 
-    USES_HANDS   = True          # the YOLO hand tracker is the "shark" the fish flee
+    USES_HANDS   = True          # hand position drives the predator the fish flee
+    HAND_TRACKER = "red"         # use red-sticker CV tracking, not YOLO
     N            = 220
     VISUAL_RANGE = 45.0
     SEP_RANGE    = 22.0
