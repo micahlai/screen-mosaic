@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ghost Trail v2 — Ripple Prototype</title>
+<style>
+  * { margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; background: #06060e; overflow: hidden; cursor: none; }
+  canvas { display: block; }
+  .hint {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    color: rgba(255,255,255,0.15); font: 11px/1 system-ui;
+    letter-spacing: 0.18em; text-transform: uppercase; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hint">move fast for bigger ripples · prototype</div>
+<script>
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+
+let W, H;
+function resize() {
+  W = canvas.width  = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ---------------------------------------------------------------------------
+// Mouse tracking — raw + smoothed + velocity
+// ---------------------------------------------------------------------------
+let rawX = W / 2, rawY = H / 2;
+let cx = rawX,    cy = rawY;       // smoothed cursor (spring-damped)
+let vx = 0,       vy = 0;         // instantaneous velocity (px/frame)
+let speed = 0;                     // magnitude
+
+window.addEventListener('mousemove', e => { rawX = e.clientX; rawY = e.clientY; });
+
+// ---------------------------------------------------------------------------
+// Ripple class
+// Each ripple is a wavy ellipse spawned at the cursor on movement.
+// It expands outward and fades. Velocity → stretch + wave amplitude.
+// ---------------------------------------------------------------------------
+class Ripple {
+  constructor(x, y, velX, velY, spd) {
+    this.ox = x;  this.oy = y;        // origin (fixed for lifetime)
+    this.velX = velX; this.velY = velY;
+    this.spd  = spd;
+
+    // How far the ring grows
+    this.maxR = 55 + spd * 3.2;
+    this.r    = 4;
+    // Grow rate proportional to speed (fast swipe → fast expansion)
+    this.growRate = 1.8 + spd * 0.08;
+
+    // Directional angle of travel
+    this.travelAngle = Math.atan2(velY, velX);
+    // Stretch: elongate the ellipse along travel direction
+    this.stretch = 1 + Math.min(spd / 28, 2.2);
+
+    // Wave distortion: sin ripples along the ring perimeter
+    this.waveFreq  = Math.floor(3 + Math.random() * 5); // 3–8 crests
+    this.waveAmp   = 2.5 + spd * 0.18;
+    this.wavePhase = Math.random() * Math.PI * 2;
+    this.waveSpeed = 0.07 + Math.random() * 0.06;
+
+    // Color — cycle through Pika's purple/magenta/cyan palette
+    this.hue = (260 + Math.random() * 120) % 360;  // 260°=violet → 380°=pink/red → wraps
+    this.life = 1.0;
+  }
+
+  update(dt) {
+    this.r          += this.growRate * dt;
+    this.wavePhase  += this.waveSpeed * dt;
+    const progress   = this.r / this.maxR;
+    // Ease-out fade: fast fade at edges, slow at center
+    this.life = Math.pow(1 - Math.min(progress, 1), 1.6);
+    return this.life > 0.005;
+  }
+
+  draw() {
+    if (this.life <= 0) return;
+    const progress = this.r / this.maxR;
+    // Ring alpha: peaks just after spawn, fades to 0
+    const alpha = this.life * 0.75;
+
+    ctx.save();
+    ctx.translate(this.ox, this.oy);
+    ctx.rotate(this.travelAngle);
+    // Stretch along travel direction, compress perpendicular
+    ctx.scale(this.stretch, 1 / this.stretch);
+
+    // ---- wavy ring path ----
+    const STEPS = 96;
+    ctx.beginPath();
+    for (let i = 0; i <= STEPS; i++) {
+      const theta = (i / STEPS) * Math.PI * 2;
+      // Radial distortion: base radius + sine wave
+      const r = this.r + this.waveAmp * (1 - progress) *
+                Math.sin(this.waveFreq * theta + this.wavePhase);
+      const px = Math.cos(theta) * r;
+      const py = Math.sin(theta) * r;
+      i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+
+    // Outer glow stroke
+    const lineW = (2 + (1 - progress) * 3.5);
+    ctx.shadowColor = `hsla(${this.hue},90%,70%,${alpha * 0.6})`;
+    ctx.shadowBlur  = 14;
+    ctx.strokeStyle = `hsla(${this.hue},85%,72%,${alpha})`;
+    ctx.lineWidth   = lineW;
+    ctx.stroke();
+
+    // Inner bright stroke (thinner, lighter)
+    ctx.shadowBlur  = 5;
+    ctx.strokeStyle = `hsla(${this.hue + 20},95%,88%,${alpha * 0.5})`;
+    ctx.lineWidth   = lineW * 0.35;
+    ctx.stroke();
+
+    ctx.restore();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Spark particles — small bright motes ejected along velocity direction
+// ---------------------------------------------------------------------------
+const sparks = [];
+class Spark {
+  constructor(x, y, velX, velY, spd) {
+    // Bias eject direction toward travel direction with spread
+    const spreadAngle = Math.atan2(velY, velX) + (Math.random() - 0.5) * 1.8;
+    const ejectSpd    = spd * (0.15 + Math.random() * 0.25);
+    this.x    = x + (Math.random() - 0.5) * 12;
+    this.y    = y + (Math.random() - 0.5) * 12;
+    this.vx   = Math.cos(spreadAngle) * ejectSpd;
+    this.vy   = Math.sin(spreadAngle) * ejectSpd - 0.4;
+    this.life = 1.0;
+    this.decay = 0.018 + Math.random() * 0.022;
+    this.size = 1.5 + Math.random() * 3;
+    this.hue  = 260 + Math.random() * 120;
+  }
+  update(dt) {
+    this.x    += this.vx * dt;
+    this.y    += this.vy * dt;
+    this.vy   *= Math.pow(0.96, dt);
+    this.vx   *= Math.pow(0.96, dt);
+    this.life -= this.decay * dt;
+    return this.life > 0;
+  }
+  draw() {
+    const a = this.life * 0.8;
+    const r = this.size * this.life;
+    const g = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, r * 2);
+    g.addColorStop(0, `hsla(${this.hue},90%,88%,${a})`);
+    g.addColorStop(1, `hsla(${this.hue},80%,65%,0)`);
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, r * 2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Ripple + spark pools
+// ---------------------------------------------------------------------------
+const ripples = [];
+let   hueShift = 0;     // slowly cycles the orb hue over time
+
+// ---------------------------------------------------------------------------
+// Main loop
+// ---------------------------------------------------------------------------
+let last    = performance.now();
+let spawnAcc = 0;            // accumulator: spawn ripple every N px of travel
+
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dt  = Math.min((now - last) / 16.67, 3.0);
+  last = now;
+  hueShift = (hueShift + 0.3 * dt) % 360;
+
+  // ---- spring-damper cursor smoothing ----
+  const ease = 1 - Math.pow(0.055, dt);    // heavy lag for ghost feel
+  const pvx  = vx, pvy = vy;
+  vx    = (rawX - cx) * ease;
+  vy    = (rawY - cy) * ease;
+  cx   += vx;
+  cy   += vy;
+  speed = Math.hypot(vx, vy);
+
+  // ---- spawn ripples (distance-based, more frequent when fast) ----
+  spawnAcc += speed;
+  const spawnEvery = Math.max(8, 28 - speed * 0.5);  // faster → denser ripples
+  while (spawnAcc >= spawnEvery) {
+    spawnAcc -= spawnEvery;
+    if (speed > 0.4) {
+      ripples.push(new Ripple(cx, cy, vx, vy, speed));
+      // Eject a few sparks
+      const nSparks = Math.floor(1 + speed / 10);
+      for (let i = 0; i < nSparks; i++) sparks.push(new Spark(cx, cy, vx, vy, speed));
+    }
+  }
+
+  // ---- fade (motion blur feel) ----
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 0.28;
+  ctx.fillStyle   = '#06060e';
+  ctx.fillRect(0, 0, W, H);
+  ctx.globalAlpha = 1;
+
+  // ---- draw with additive blend so rings bloom ----
+  ctx.globalCompositeOperation = 'lighter';
+
+  // Update + draw ripples
+  for (let i = ripples.length - 1; i >= 0; i--) {
+    if (!ripples[i].update(dt)) { ripples.splice(i, 1); continue; }
+    ripples[i].draw();
+  }
+
+  // Update + draw sparks
+  for (let i = sparks.length - 1; i >= 0; i--) {
+    if (!sparks[i].update(dt)) { sparks.splice(i, 1); continue; }
+    sparks[i].draw();
+  }
+
+  // ---- cursor orb ----
+  const orbHue = (270 + hueShift) % 360;
+  // Outer bloom
+  const bloom = ctx.createRadialGradient(cx, cy, 0, cx, cy, 36 + speed * 0.4);
+  bloom.addColorStop(0,    `hsla(${orbHue},85%,90%,0.9)`);
+  bloom.addColorStop(0.25, `hsla(${orbHue},80%,70%,0.45)`);
+  bloom.addColorStop(0.6,  `hsla(${orbHue+30},75%,55%,0.15)`);
+  bloom.addColorStop(1,    `hsla(${orbHue+60},70%,45%,0)`);
+  ctx.fillStyle = bloom;
+  ctx.beginPath();
+  ctx.arc(cx, cy, 36 + speed * 0.4, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Bright core
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = 'rgba(255,255,255,0.95)';
+  ctx.beginPath();
+  ctx.arc(cx, cy, 3, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Velocity arrow hint (subtle, helps visualise direction)
+  if (speed > 4) {
+    const arrowLen = Math.min(speed * 1.2, 40);
+    const ax = cx + (vx / speed) * arrowLen;
+    const ay = cy + (vy / speed) * arrowLen;
+    ctx.globalAlpha = Math.min(speed / 30, 0.35);
+    ctx.strokeStyle = `hsla(${orbHue},80%,80%,1)`;
+    ctx.lineWidth   = 1.5;
+    ctx.shadowBlur  = 0;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(ax, ay);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
