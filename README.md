@@ -15,13 +15,18 @@ pip install -r requirements.txt
 python mosiac
 ```
 
-This starts the backend and **two web apps** on `:5001` (LAN URLs are printed):
+This starts the backend and **two web apps** on `:5003` (LAN URLs are printed):
 
-- **Screen slave** — open `http://<host-ip>:5001/display` on each screen. Each
+- **Screen slave** — open `http://<host-ip>:5003/display` on each screen. Each
   browser auto-claims the next display slot (1st → `display_1` with marker IDs
   0–3, 2nd → `display_2` with 4–7, …) and shows its four corner markers.
-- **Phone** — open `http://<host-ip>:5001/phone`. Take a photo of all screens,
+- **Phone** — open `http://<host-ip>:5003/phone`. Take a photo of all screens,
   then map content onto them.
+
+The phone's live camera (used by live calibration and the hand-tracked
+visualizations) needs a **secure context**, so the host also serves HTTPS on
+`:5004` (`PORT + 1`) with a self-signed cert — open `https://<host-ip>:5004/phone`
+and accept the one-time warning. Everything else works over plain HTTP.
 
 ## Phases (switched from the phone)
 
@@ -36,17 +41,35 @@ This starts the backend and **two web apps** on `:5001` (LAN URLs are printed):
    - **UV map** — x→red, y→green gradient (default).
    - **Uploaded image** — *Fill* (stretch to the screens' bounding box) or
      *Fit* (preserve aspect ratio).
-   - **Visualization** — a live animation rendered server-side (GPU) at a
-     resolution matching the screens' bounding-box orientation, streamed (MJPEG)
-     and warped per screen. Built in: **Particle Flow** and **Smoke** (a
-     stable-fluids fire/smoke sim).
+   - **Visualization** — a live animation rendered server-side (GPU when
+     available) at a resolution matching the screens' bounding-box orientation,
+     streamed (MJPEG) and warped per screen. Built in:
+     - **Particle Flow** — flow-field particles.
+     - **Smoke** — a stable-fluids fire/smoke sim.
+     - **Charges** (plus **Charges 1** / **Charges 2**, independent copies you
+       can tune separately) — magnetic-charge particles that chase a cursor.
+     - **Fish Boids** / **Bird Boids** — flocking sims (cohesion / alignment /
+       separation + edge avoidance) with a *Normal* and a *Game* mode.
 
 The phone's *Content* dropdown offers UV map / Upload image / Visualization;
 picking Visualization reveals a second dropdown populated from whatever is
-registered in `visualization.py`.
+registered in the `mosiac/visualizations/` package.
+
+### Hand-tracked visualizations (red-sticker CV)
+
+Some visualizations are driven by your hand: put a **red sticker** on it, stream
+the phone camera, and the host tracks the largest red blob (HSV thresholding in
+`red_tracker.py`) and feeds its position to the sim — the fish flee it like a
+predator, the charge particles chase it as the cursor. These vizzes
+(**Fish Boids**, **Charges** & its copies) set `NEEDS_PHONE_CAMERA`, so selecting
+one auto-starts the phone camera stream (use the HTTPS URL).
+
+A **⭕ Hand ring** toggle appears on the phone for these vizzes to show/hide the
+translucent gray ring drawn at the tracked hand position. (An older YOLOv8-pose
+tracker, `hands.py`, is still available via `HAND_TRACKER = "yolo"`.)
 
 3. **Live calibration** — a camera continuously watches the screens and updates
-   each screen's warp live (default **12 fps**). Start it from the phone's
+   each screen's warp live (default **24 fps**). Start it from the phone's
    **🔴 Live calibration** button, then pick the **camera source**:
    - *Phone camera* — the phone streams its own camera frames to the host.
    - *Server device camera* — the host opens a local camera (`cv2.VideoCapture`).
@@ -59,8 +82,10 @@ registered in `visualization.py`.
    serves **HTTPS** with a self-signed cert (accept the one-time warning on each
    device). Toggle with `USE_HTTPS` in `consts.py`.
 
-Tunables in `mosiac/consts.py`: `PORT`, `USE_HTTPS`, `MARKER_PX`,
-`LIVE_MARKER_PX`, `LIVE_FPS`, `CAMERA_INDEX`.
+Tunables in `mosiac/consts.py`: `PORT`, `USE_HTTPS` / `HTTPS_PORT`, `MARKER_PX`,
+`LIVE_MARKER_PX`, `LIVE_FPS`, `LIVE_MAX_WIDTH`, `CAMERA_INDEX`; hand tracking:
+`HAND_FPS`, `HAND_TRACKER` defaults, `FISH_HAND_MARKER_FRAC` (gray-ring size),
+plus the `HAND_*` YOLO options.
 
 ### Adding a visualization
 
@@ -89,9 +114,11 @@ margin), so the gradient/image/particles span only the region the screens cover.
 | Path | Purpose |
 |------|---------|
 | `mosiac/` | The host. `python mosiac` runs `__main__` → `server.py`. |
-| `mosiac/server.py` | Flask host: both web apps, calibration, mapping, content. |
+| `mosiac/server.py` | Flask host: both web apps, calibration, mapping, content, hand stream. |
 | `mosiac/detector.py` | ArUco/AprilTag detection → grouped, ordered, normalized. |
-| `mosiac/visualizations/` | Visualization package: framework in `__init__.py`, one file per viz (`particleflow.py`, `smokesim.py`). |
+| `mosiac/red_tracker.py` | Red-sticker hand tracker (HSV blob centroid) — drives hand-tracked vizzes. |
+| `mosiac/hands.py` | Alternative YOLOv8-pose hand tracker (`HAND_TRACKER = "yolo"`). |
+| `mosiac/visualizations/` | Visualization package: framework in `__init__.py`, one file per viz (`particleflow.py`, `smokesim.py`, `charges*.py`, `fishboids.py`, `birdboids.py`). |
 | `tools/` | Standalone analysis utilities (`python -m tools.cli IMAGE`, etc.). |
 | `legacy/` | Earlier desktop prototype (`master/`, `slave/`, `shared/`). |
 
