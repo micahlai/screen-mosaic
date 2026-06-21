@@ -1,9 +1,18 @@
-# Mosiac
+# Mosaic
+
+![Mosaic](read-me-images/1.png)
 
 Turn several ordinary displays into one coordinated canvas using a single phone
 photo. Each screen shows four ArUco markers in its corners; you photograph them
 all from one spot; the host then warps content per-screen so that — viewed from
 where the photo was taken — every screen lines up into one continuous image.
+
+## Gallery
+
+| | |
+|---|---|
+| ![](read-me-images/2.png) | ![](read-me-images/3.PNG) |
+| ![](read-me-images/4.png) | ![](read-me-images/5.png) |
 
 ## Run the host
 
