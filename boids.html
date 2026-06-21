@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Shark Game</title>
+<style>
+  * { margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; background: #020d18; overflow: hidden; cursor: crosshair; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+
+let W, H;
+function resize() {
+  W = canvas.width  = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+  drawBackground();
+}
+window.addEventListener('resize', resize);
+
+// Pre-rendered background canvas
+const bgCanvas = document.createElement('canvas');
+const bgCtx    = bgCanvas.getContext('2d');
+function drawBackground() {
+  bgCanvas.width = W; bgCanvas.height = H;
+  const g = bgCtx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0,   '#030f1c');
+  g.addColorStop(0.5, '#041525');
+  g.addColorStop(1,   '#020b16');
+  bgCtx.fillStyle = g;
+  bgCtx.fillRect(0, 0, W, H);
+  // Subtle caustic grid lines
+  bgCtx.strokeStyle = 'rgba(40,100,160,0.04)';
+  bgCtx.lineWidth = 1;
+  for (let x = 0; x < W; x += 60) { bgCtx.beginPath(); bgCtx.moveTo(x,0); bgCtx.lineTo(x,H); bgCtx.stroke(); }
+  for (let y = 0; y < H; y += 60) { bgCtx.beginPath(); bgCtx.moveTo(0,y); bgCtx.lineTo(W,y); bgCtx.stroke(); }
+}
+resize();
+
+// ---- Boid parameters ------------------------------------------------------
+const N            = 220;
+const VISUAL_RANGE = 75;
+const SEP_RANGE    = 22;
+const MAX_SPEED    = 6.5;
+const MIN_SPEED    = 1.8;
+const W_COH        = 0.0040;  // restored — fish school together
+const W_ALI        = 0.048;
+const W_SEP        = 0.12;
+const W_WANDER     = 0.038;
+const FLEE_RANGE   = 170;
+const W_FLEE       = 7.5;
+const EAT_RADIUS   = 34;
+
+// ---- Fish state -----------------------------------------------------------
+const bx     = new Float32Array(N);
+const by     = new Float32Array(N);
+const bvx    = new Float32Array(N);
+const bvy    = new Float32Array(N);
+const wander = new Float32Array(N);
+const hues   = new Float32Array(N);
+const sizes  = new Float32Array(N);  // per-fish scale variation
+const alive  = new Uint8Array(N).fill(1);
+
+function spawnFish() {
+  const cols = Math.round(Math.sqrt(N * W / H));
+  const rows = Math.ceil(N / cols);
+  const cw = W / cols, ch = H / rows;
+  for (let i = 0; i < N; i++) {
+    alive[i]  = 1;
+    bx[i]     = (i % cols + 0.5 + (Math.random()-0.5)*0.85) * cw;
+    by[i]     = (Math.floor(i/cols) + 0.5 + (Math.random()-0.5)*0.85) * ch;
+    const dir = Math.random() * Math.PI * 2;
+    const spd = MIN_SPEED + Math.random() * 1.4;
+    bvx[i]   = Math.cos(dir) * spd;
+    bvy[i]   = Math.sin(dir) * spd;
+    wander[i] = dir;
+    hues[i]  = 148 + Math.random() * 70;
+    sizes[i] = 0.78 + Math.random() * 0.44;
+  }
+}
+spawnFish();
+
+// ---- Shark (autonomous chaser) --------------------------------------------
+let mouseX = W/2, mouseY = H/2;
+let sharkX = -200, sharkY = -200;
+let sharkVx = 0, sharkVy = 0;
+let sharkAngle = 0;
+let sharkOnScreen = false;
+
+const SHARK_ACCEL     = 2.2;
+const SHARK_MAX_SPEED = 28;
+const SHARK_DRAG      = 0.88;
+const SHARK_TURN_RATE = 0.22;  // max radians turned per frame
+
+window.addEventListener('mousemove', e => {
+  mouseX = e.clientX; mouseY = e.clientY;
+  if (!sharkOnScreen) { sharkX = e.clientX; sharkY = e.clientY; sharkOnScreen = true; }
+  if (game.state === 'waiting') { game.state = 'playing'; game.startTime = performance.now(); }
+});
+canvas.addEventListener('click', () => { if (game.state === 'done') resetGame(); });
+
+// ---- Shark trail ----------------------------------------------------------
+const SHARK_TRAIL_MAX = 42;
+const sharkTrail = [];
+
+// ---- Burst particles ------------------------------------------------------
+const bursts = [];
+function spawnBurst(x, y, hue) {
+  for (let k = 0; k < 12; k++) {
+    const a = Math.random() * Math.PI * 2;
+    const s = 1.8 + Math.random() * 3;
+    bursts.push({ x, y, vx: Math.cos(a)*s, vy: Math.sin(a)*s, life: 1, hue });
+  }
+}
+
+// ---- Game state -----------------------------------------------------------
+const game = { state: 'waiting', startTime: 0, elapsed: 0, eaten: 0 };
+function resetGame() {
+  Object.assign(game, { state: 'waiting', eaten: 0, elapsed: 0 });
+  sharkOnScreen = false;
+  sharkX = -200; sharkY = -200; sharkVx = 0; sharkVy = 0;
+  sharkTrail.length = 0; bursts.length = 0;
+  spawnFish();
+}
+
+// ---- Fish drawing ---------------------------------------------------------
+function drawFish(x, y, angle, hue, spd, scale) {
+  const t   = Math.min(spd / MAX_SPEED, 1);
+  const lit = 52 + t * 30;
+  const col = `hsl(${hue|0},75%,${lit|0}%)`;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  ctx.scale(scale, scale);
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+
+  // Translucent body fill
+  ctx.fillStyle = `hsla(${hue|0},70%,${lit|0}%,0.18)`;
+  ctx.beginPath(); ctx.ellipse(1, 0, 10, 5.5, 0, 0, Math.PI*2); ctx.fill();
+
+  // Body outline with glow
+  ctx.shadowColor = col;
+  ctx.shadowBlur  = 4;
+  ctx.strokeStyle = col;
+  ctx.lineWidth   = 1.2;
+  ctx.beginPath(); ctx.ellipse(1, 0, 10, 5.5, 0, 0, Math.PI*2); ctx.stroke();
+
+  // Forked tail
+  ctx.beginPath();
+  ctx.moveTo(-9,0); ctx.lineTo(-17,-7);
+  ctx.moveTo(-9,0); ctx.lineTo(-17, 7);
+  ctx.stroke();
+
+  // Dorsal fin
+  ctx.beginPath(); ctx.moveTo(-2,-5.5); ctx.lineTo(2,-9); ctx.lineTo(5,-5.5); ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // Eye
+  ctx.fillStyle = col; ctx.beginPath(); ctx.arc(5.5,-1.6,1.5,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.6)';
+  ctx.beginPath(); ctx.arc(6,-2.1,0.55,0,Math.PI*2); ctx.fill();
+
+  // Smile
+  ctx.strokeStyle = col; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(2.5,1); ctx.quadraticCurveTo(4.2,3.2,6.5,1); ctx.stroke();
+  ctx.restore();
+}
+
+// ---- Shark drawing --------------------------------------------------------
+function drawShark(x, y, angle) {
+  ctx.save();
+  ctx.translate(x, y); ctx.rotate(angle);
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+
+  // Glow aura
+  ctx.shadowColor = 'rgba(80,160,210,0.5)';
+  ctx.shadowBlur  = 18;
+
+  // Body fill
+  ctx.fillStyle = 'rgba(100,170,205,0.15)';
+  ctx.beginPath(); ctx.ellipse(0,0,26,11,0,0,Math.PI*2); ctx.fill();
+
+  ctx.strokeStyle = '#8cc8e0'; ctx.lineWidth = 1.8;
+  ctx.beginPath(); ctx.ellipse(0,0,26,11,0,0,Math.PI*2); ctx.stroke();
+
+  // Dorsal fin
+  ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(-6,-11); ctx.lineTo(0,-26); ctx.lineTo(10,-11); ctx.stroke();
+
+  // Pectoral fin
+  ctx.beginPath(); ctx.moveTo(4,11); ctx.lineTo(-2,21); ctx.lineTo(-10,11); ctx.stroke();
+
+  // Tail
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(-26,0); ctx.lineTo(-40,-15); ctx.moveTo(-26,0); ctx.lineTo(-40,15); ctx.stroke();
+
+  ctx.shadowBlur = 0;
+
+  // Teeth
+  ctx.strokeStyle = '#1e3a4a'; ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(18,-3); ctx.lineTo(22,-1); ctx.lineTo(24,-4); ctx.lineTo(26,-1);
+  ctx.moveTo(18, 3); ctx.lineTo(22, 1); ctx.lineTo(24, 4); ctx.lineTo(26, 1);
+  ctx.stroke();
+
+  // Eye
+  ctx.fillStyle = '#1e3a4a';
+  ctx.beginPath(); ctx.arc(13,-3.5,3,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.35)';
+  ctx.beginPath(); ctx.arc(14,-4.2,1,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+
+function drawSharkTrail() {
+  ctx.lineCap = 'round';
+  for (let i = 1; i < sharkTrail.length; i++) {
+    const t = 1 - i / sharkTrail.length;
+    const a = t * t * 0.22;
+    if (a < 0.004) continue;
+    ctx.strokeStyle = `rgba(100,180,230,${a})`;
+    ctx.lineWidth   = 1 + t * 4;
+    ctx.beginPath();
+    ctx.moveTo(sharkTrail[i-1].x, sharkTrail[i-1].y);
+    ctx.lineTo(sharkTrail[i].x,   sharkTrail[i].y);
+    ctx.stroke();
+  }
+}
+
+// ---- HUD ------------------------------------------------------------------
+function drawHUD(now) {
+  const remaining = N - game.eaten;
+  ctx.shadowBlur = 0;
+
+  if (game.state === 'waiting') {
+    ctx.fillStyle = 'rgba(180,220,255,0.5)';
+    ctx.font = '18px system-ui'; ctx.textAlign = 'center';
+    ctx.fillText('Move your cursor — the shark will give chase. Eat all the fish!', W/2, H-36);
+    return;
+  }
+
+  const secs = game.state === 'done' ? game.elapsed : (now - game.startTime)/1000;
+
+  ctx.fillStyle = 'rgba(200,235,255,0.90)';
+  ctx.font = 'bold 30px system-ui'; ctx.textAlign = 'center';
+  ctx.fillText(secs.toFixed(2) + 's', W/2, 42);
+
+  ctx.font = '15px system-ui'; ctx.textAlign = 'right';
+  ctx.fillStyle = 'rgba(170,215,255,0.55)';
+  ctx.fillText(`🐟 ${remaining} remaining`, W-22, 34);
+
+  if (game.state === 'done') {
+    ctx.fillStyle = 'rgba(2,13,24,0.75)';
+    ctx.fillRect(0,0,W,H);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#8cc8e0';
+    ctx.font = 'bold 50px system-ui';
+    ctx.fillText('🦈 All fish eaten!', W/2, H/2-50);
+    ctx.fillStyle = 'rgba(220,245,255,0.92)';
+    ctx.font = 'bold 36px system-ui';
+    ctx.fillText(`Time: ${game.elapsed.toFixed(2)}s`, W/2, H/2+12);
+    ctx.fillStyle = 'rgba(160,210,255,0.45)';
+    ctx.font = '17px system-ui';
+    ctx.fillText('Click to play again', W/2, H/2+58);
+  }
+}
+
+// ---- Physics --------------------------------------------------------------
+const VR2 = VISUAL_RANGE * VISUAL_RANGE;
+const FR2 = FLEE_RANGE   * FLEE_RANGE;
+
+function update(now) {
+  // Shark: turn toward cursor then accelerate forward — autonomous chaser
+  if (sharkOnScreen) {
+    const dx = mouseX - sharkX, dy = mouseY - sharkY;
+    const dist = Math.hypot(dx, dy);
+    if (dist > 2) {
+      const targetAngle = Math.atan2(dy, dx);
+      let diff = targetAngle - sharkAngle;
+      while (diff >  Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      sharkAngle += Math.sign(diff) * Math.min(Math.abs(diff), SHARK_TURN_RATE);
+      // Accelerate in facing direction, scale down near target
+      const throttle = Math.min(dist / 20, 1);
+      sharkVx += Math.cos(sharkAngle) * SHARK_ACCEL * throttle;
+      sharkVy += Math.sin(sharkAngle) * SHARK_ACCEL * throttle;
+    }
+    sharkVx *= SHARK_DRAG; sharkVy *= SHARK_DRAG;
+    const spd = Math.hypot(sharkVx, sharkVy);
+    if (spd > SHARK_MAX_SPEED) { sharkVx = sharkVx/spd*SHARK_MAX_SPEED; sharkVy = sharkVy/spd*SHARK_MAX_SPEED; }
+    sharkX += sharkVx; sharkY += sharkVy;
+    sharkTrail.unshift({ x: sharkX, y: sharkY });
+    if (sharkTrail.length > SHARK_TRAIL_MAX) sharkTrail.pop();
+  }
+
+  // Eat collision
+  if (game.state === 'playing') {
+    const er2 = EAT_RADIUS * EAT_RADIUS;
+    for (let i = 0; i < N; i++) {
+      if (!alive[i]) continue;
+      const dx = bx[i]-sharkX, dy = by[i]-sharkY;
+      if (dx*dx+dy*dy < er2) {
+        alive[i] = 0; game.eaten++;
+        spawnBurst(bx[i], by[i], hues[i]);
+        if (game.eaten === N) { game.state = 'done'; game.elapsed = (now-game.startTime)/1000; }
+      }
+    }
+  }
+
+  // Fish boids
+  for (let i = 0; i < N; i++) {
+    if (!alive[i]) continue;
+    let fx = 0, fy = 0;
+    let cohX = 0, cohY = 0, aliVx = 0, aliVy = 0, sepX = 0, sepY = 0, nn = 0;
+    for (let j = 0; j < N; j++) {
+      if (i===j || !alive[j]) continue;
+      const dx = bx[j]-bx[i], dy = by[j]-by[i];
+      const d2 = dx*dx + dy*dy;
+      if (d2 > VR2) continue;
+      cohX+=bx[j]; cohY+=by[j]; aliVx+=bvx[j]; aliVy+=bvy[j]; nn++;
+      if (d2 < SEP_RANGE*SEP_RANGE && d2 > 0) {
+        const d = Math.sqrt(d2), s=(SEP_RANGE-d)/SEP_RANGE;
+        sepX-=(dx/d)*s; sepY-=(dy/d)*s;
+      }
+    }
+    if (nn>0) {
+      fx += (cohX/nn - bx[i]) * W_COH;
+      fy += (cohY/nn - by[i]) * W_COH;
+      fx += (aliVx/nn - bvx[i]) * W_ALI;
+      fy += (aliVy/nn - bvy[i]) * W_ALI;
+    }
+    fx+=sepX*W_SEP; fy+=sepY*W_SEP;
+    wander[i]+=(Math.random()-0.5)*0.06;
+    fx+=Math.cos(wander[i])*W_WANDER; fy+=Math.sin(wander[i])*W_WANDER;
+
+    const sx=bx[i]-sharkX, sy=by[i]-sharkY, sd2=sx*sx+sy*sy;
+    if (sd2<FR2 && sd2>0) {
+      const sd=Math.sqrt(sd2), p=W_FLEE*Math.pow(1-sd/FLEE_RANGE,1.5)/sd;
+      fx+=sx*p; fy+=sy*p;
+    }
+    bvx[i]+=fx; bvy[i]+=fy;
+    const s=Math.hypot(bvx[i],bvy[i]);
+    if (s>MAX_SPEED)          { bvx[i]=bvx[i]/s*MAX_SPEED; bvy[i]=bvy[i]/s*MAX_SPEED; }
+    else if (s<MIN_SPEED&&s>0){ bvx[i]=bvx[i]/s*MIN_SPEED; bvy[i]=bvy[i]/s*MIN_SPEED; }
+    bx[i]+=bvx[i]; by[i]+=bvy[i];
+    if (bx[i]<-20) bx[i]=W+20; if (bx[i]>W+20) bx[i]=-20;
+    if (by[i]<-20) by[i]=H+20; if (by[i]>H+20) by[i]=-20;
+  }
+
+  // Burst particles
+  for (let i=bursts.length-1; i>=0; i--) {
+    const b=bursts[i];
+    b.x+=b.vx; b.y+=b.vy; b.vx*=0.91; b.vy*=0.91; b.life-=0.038;
+    if (b.life<=0) bursts.splice(i,1);
+  }
+}
+
+// ---- Render ---------------------------------------------------------------
+function render(now) {
+  // Background
+  ctx.drawImage(bgCanvas, 0, 0);
+
+  // Motion fade
+  ctx.globalAlpha = 0.18;
+  ctx.fillStyle   = '#020d18';
+  ctx.fillRect(0, 0, W, H);
+  ctx.globalAlpha = 1;
+
+  if (sharkOnScreen) drawSharkTrail();
+
+  // Fish with additive glow pass
+  for (let i = 0; i < N; i++) {
+    if (!alive[i]) continue;
+    drawFish(bx[i], by[i], Math.atan2(bvy[i],bvx[i]), hues[i], Math.hypot(bvx[i],bvy[i]), sizes[i]);
+  }
+
+  // Burst particles
+  for (const b of bursts) {
+    ctx.fillStyle = `hsla(${b.hue},80%,75%,${(b.life*b.life).toFixed(3)})`;
+    ctx.beginPath(); ctx.arc(b.x,b.y,3.5*b.life,0,Math.PI*2); ctx.fill();
+  }
+
+  if (sharkOnScreen && game.state !== 'done') drawShark(sharkX, sharkY, sharkAngle);
+
+  drawHUD(now);
+}
+
+// ---- Loop -----------------------------------------------------------------
+function frame(now) { requestAnimationFrame(frame); update(now); render(now); }
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
