@@ -1,4 +1,4 @@
-"""Magnetic charge particle simulation.
+"""Magnetic charge particle simulation (copy 1 — edit freely, independent of charges/charges2).
 
 Faithful Python port of ghost_trail_v2.html:
 - Radial gradient per particle (glow + core dot) with 'lighter' additive blending
@@ -57,14 +57,14 @@ def _speed_rgb_t(spd_t, sc):
     return torch.stack([r, g, b], dim=-1)
 
 
-@register("charges", "Charges")
-class ChargesSim(Visualization):
+@register("charges1", "Charges 1")
+class ChargesSim1(Visualization):
     USES_HANDS         = True    # hand position drives the cursor the particles chase
     HAND_TRACKER       = "red"   # red-sticker CV tracking, same as the boids
     NEEDS_PHONE_CAMERA = True    # phone must stream frames whenever this viz is active
 
-    C1   = -12000    # inter-particle constant (negative = attract)
-    C2   = -100000   # cursor attraction constant
+    C1   = 6000    # inter-particle constant (negative = attract)
+    C2   = 100000   # cursor attraction constant
     C3   = 0.98    # drag per frame
     DT_S = 1 / 120  # physics timestep
 
@@ -72,7 +72,7 @@ class ChargesSim(Visualization):
         super().__init__(width, height)
         sc = self.scale
         self._gpu = torch is not None
-        self.N = 1000 if self._gpu else 400
+        self.N = 3000 if self._gpu else 400
 
         # hand cursor (red tracker). Falls back to auto-motion when no hand is seen.
         self._ptr = None

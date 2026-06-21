@@ -287,5 +287,7 @@ from . import gradients      # noqa: E402,F401
 from . import particleflow   # noqa: E402,F401
 from . import smokesim       # noqa: E402,F401
 from . import charges        # noqa: E402,F401
+from . import charges1       # noqa: E402,F401
+from . import charges2       # noqa: E402,F401
 from . import fishboids      # noqa: E402,F401
 from . import birdboids      # noqa: E402,F401
