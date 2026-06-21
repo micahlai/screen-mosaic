@@ -40,6 +40,7 @@ import json
 import socket
 import threading
 import time
+import uuid
 from pathlib import Path
 
 import cv2
@@ -929,8 +930,8 @@ def index():
         f"<li>Phone capture + phase control: <a href='/phone'>/phone</a></li>"
         f"</ul>"
         f"<p style='font:14px system-ui;color:#666'>On the LAN open "
-        f"<code>http://{ip}:5001/display</code> on each screen and "
-        f"<code>http://{ip}:5001/phone</code> on the phone.</p>"
+        f"<code>http://{ip}:5002/display</code> on each screen and "
+        f"<code>http://{ip}:5002/phone</code> on the phone.</p>"
     )
 
 
@@ -948,11 +949,11 @@ def _lan_ip() -> str:
 def main():
     ip = _lan_ip()
     print("Mosiac host running. Open on the LAN:")
-    print(f"  Screen slave : http://{ip}:5001/display")
-    print(f"  Phone capture: http://{ip}:5001/phone")
+    print(f"  Screen slave : http://{ip}:5002/display")
+    print(f"  Phone capture: http://{ip}:5002/phone")
     print(f"Debug captures saved to: {DEBUG_DIR}")
     # debug=False so the particle background thread isn't duplicated by the reloader
-    app.run(host="0.0.0.0", port=5001, threaded=True)
+    app.run(host="0.0.0.0", port=5002, threaded=True)
 
 
 if __name__ == "__main__":

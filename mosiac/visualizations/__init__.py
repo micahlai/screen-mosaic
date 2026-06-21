@@ -118,3 +118,4 @@ def _blur(img, sigma):
 # --- register built-in visualizations (importing each runs its @register) ---
 from . import particleflow   # noqa: E402,F401
 from . import smokesim       # noqa: E402,F401
+from . import aquarium       # noqa: E402,F401
