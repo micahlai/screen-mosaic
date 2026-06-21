@@ -1,0 +1,11 @@
+{
+  "name": "gradient3_fire",
+  "stops": [
+    { "pos": 0.0, "color": "000000" },
+    { "pos": 0.2, "color": "330000" },
+    { "pos": 0.4, "color": "990000" },
+    { "pos": 0.6, "color": "ff6600" },
+    { "pos": 0.8, "color": "ffcc00" },
+    { "pos": 1.0, "color": "ffffff" }
+  ]
+}

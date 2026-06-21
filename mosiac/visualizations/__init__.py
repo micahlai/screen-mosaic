@@ -125,6 +125,9 @@ def _blur(img, sigma):
     return up.view(*img.shape)
 
 
+# --- gradient maps (used by the smoke viz) ---
+from . import gradients      # noqa: E402,F401
+
 # --- register built-in visualizations (importing each runs its @register) ---
 from . import particleflow   # noqa: E402,F401
 from . import smokesim       # noqa: E402,F401

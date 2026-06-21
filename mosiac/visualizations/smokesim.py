@@ -11,6 +11,7 @@ import numpy as np
 import cv2
 
 from . import Visualization, register, torch, _DEVICE
+from . import gradients
 
 
 @register("smoke", "Smoke")
@@ -34,6 +35,8 @@ class SmokeSim(Visualization):
 
         dev = _DEVICE
         self.dev = dev
+        self.lut = None          # gradient LUT tensor, (re)built lazily on render
+        self._grad_ver = -1      # last gradient version baked into self.lut
         # coarse noise fields (octaves of the flow potential + the haze seed)
         self.c1 = self._coarse(5)       # big slow swirls
         self.c2 = self._coarse(11)      # smaller eddies
@@ -101,12 +104,17 @@ class SmokeSim(Visualization):
         if not self._gpu:
             return self._render_cpu()
         F = torch.nn.functional
+        # (re)build the gradient LUT on the device if the selection changed
+        if self.lut is None or self._grad_ver != gradients.version():
+            self.lut = torch.tensor(gradients.current_lut(), device=self.dev)
+            self._grad_ver = gradients.version()
         up = F.interpolate(self.d, size=(self.h, self.w),
                            mode="bilinear", align_corners=False)[0, 0]
         v = (up * 1.35 - 0.12).clamp(0, 1)          # lift contrast so swirls read
-        # cool, slightly-blue misty smoke (BGR)
-        frame = torch.stack([v * 215, v * 205, v * 198], dim=0)
-        return frame.clamp(0, 255).to(torch.uint8).permute(1, 2, 0).contiguous().cpu().numpy()
+        # map density through the gradient LUT (0 -> first color, 1 -> last)
+        idx = (v * (self.lut.shape[0] - 1)).round().long()
+        frame = self.lut[idx]                        # (H, W, 3) BGR
+        return frame.clamp(0, 255).to(torch.uint8).contiguous().cpu().numpy()
 
     # --- CPU fallback (no torch): blurred drifting noise ---
     def _step_cpu(self):
@@ -118,6 +126,8 @@ class SmokeSim(Visualization):
         self.t += 0.05
 
     def _render_cpu(self):
+        lut = gradients.current_lut()                # cached numpy (256, 3) BGR
         up = cv2.resize(self.d, (self.w, self.h))
         v = np.clip(up * 1.35 - 0.12, 0, 1)
-        return (np.stack([v * 215, v * 205, v * 198], -1)).astype(np.uint8)
+        idx = (v * (lut.shape[0] - 1)).round().astype(np.int32)
+        return lut[idx].astype(np.uint8)             # (H, W, 3) BGR

@@ -90,10 +90,17 @@ _content_version = 0
 _content_mode = "fill"   # "fill" = stretch to UV box | "fit" = preserve aspect
 
 # Live visualization (particles / smoke / ...), sized to the UV box orientation.
+# We keep the latest *raw* field (numpy BGR) and warp it per-screen on demand, so
+# each slave only receives its own region at its own resolution (not the full
+# field). A version counter + condition let the per-screen streams send a frame
+# only when a new one is rendered.
 VIZ_MAX_SIDE = 960
+VIZ_SCREEN_MAX = 2560    # cap on a per-screen warped output's long side
 _viz_name = "particles"
 _viz = None
-_viz_frame = None        # latest rendered JPEG bytes
+_viz_raw = None          # latest rendered field as a numpy BGR array
+_viz_ver = 0             # bumped each new rendered field
+_viz_cond = threading.Condition()
 _viz_size = None         # (w, h) the sim is currently running at
 _viz_started = False
 
@@ -197,6 +204,9 @@ DISPLAY_PAGE = r"""
             background-color: #000; background-size: 100% 100%;
             background-repeat: no-repeat; image-rendering: auto; }
   #uvimg { position: absolute; display: none; }
+  /* server-warped per-screen visualization: fills the screen 1:1, no client warp */
+  #screenimg { position: absolute; inset: 0; width: 100%; height: 100%;
+               object-fit: fill; display: none; }
   #uvmsg { position: fixed; inset: 0; display: none; align-items: center;
            justify-content: center; text-align: center; background: #111;
            color: #fff; font: 600 18px system-ui; padding: 24px; }
@@ -210,7 +220,7 @@ DISPLAY_PAGE = r"""
     <div class="banner"><b id="title">registering…</b>
       <span id="subtitle">Open the phone app and capture this screen</span></div>
   </div>
-  <div id="uv"><div id="uvquad"><img id="uvimg" alt=""></div></div>
+  <div id="uv"><div id="uvquad"><img id="uvimg" alt=""></div><img id="screenimg" alt=""></div>
   <!-- markers live in their own layer so they can sit over the content in live mode -->
   <div id="markers">
     <div class="corner tl" data-slot="top_left"></div>
@@ -400,6 +410,22 @@ function showLive(s){
 function renderUV(){
   if (!(LAST && (LAST.phase==="mapping" || LAST.phase==="live")
         && LAST.complete && LAST.corner_points)) return;
+  const screenimg = document.getElementById("screenimg");
+  // Visualizations are warped per-screen on the SERVER — just display the stream
+  // (the server re-warps on every frame, including live corner changes).
+  if (LAST.content && LAST.content.kind === "visualization"){
+    document.getElementById("uvquad").style.display = "none";
+    document.getElementById("uvimg").style.display = "none";
+    const url = `/content/stream/${DISPLAY_ID}?w=${Math.round(window.innerWidth)}`+
+                `&h=${Math.round(window.innerHeight)}`;
+    if (screenimg.dataset.url !== url){ screenimg.dataset.url = url; screenimg.src = url; }
+    screenimg.style.display = "block";
+    return;
+  }
+  // non-viz (image / gradient): client-side homography warp
+  if (screenimg.dataset.url){ screenimg.dataset.url=""; screenimg.removeAttribute("src");
+                              screenimg.style.display="none"; }
+  document.getElementById("uvquad").style.display = "block";
   const W = window.innerWidth, H = window.innerHeight;
   // UV domain = bounding box of all screens' corners (+ margin), shared by every
   // slave so the extreme top-right screen point — not the photo corner — is red.
@@ -563,6 +589,24 @@ def list_visualizations():
     return jsonify(visualizations.available())
 
 
+@app.get("/gradients")
+def list_gradients():
+    """Gradient maps available to the smoke visualization (drives its selector)."""
+    return jsonify({"gradients": visualizations.gradients.available(),
+                    "current": visualizations.gradients.current_name()})
+
+
+@app.post("/content/gradient")
+def set_gradient():
+    """Select the smoke gradient; the running sim picks it up on its next frame."""
+    body = request.get_json(silent=True) or {}
+    name = body.get("name")
+    if name not in visualizations.gradients.available():
+        return jsonify({"error": f"unknown gradient: {name}"}), 400
+    visualizations.gradients.set_current(name)
+    return jsonify({"gradient": name})
+
+
 @app.post("/content")
 def upload_content():
     global _content_kind, _content_bytes, _content_mime, _content_version, _content_mode
@@ -612,19 +656,74 @@ def clear_content():
     return jsonify({"ok": True, "kind": None})
 
 
-@app.get("/content/stream")
-def content_stream():
-    """MJPEG stream of the live visualization; an <img> here auto-updates."""
+def _warp_field_to_screen(field, display_id, w, h):
+    """Warp the rendered field into this screen's rectangle (its homography).
+    Returns a (h, w, 3) BGR image, or None if the display isn't calibrated."""
+    d = _display_by_id(display_id)
+    cap = d["capture"] if d else None
+    bounds = _uv_bounds
+    if field is None or bounds is None or not (cap and cap["complete"]):
+        return None
+    fh, fw = field.shape[:2]
+    bw = bounds["max_x"] - bounds["min_x"]
+    bh = bounds["max_y"] - bounds["min_y"]
+    src = []
+    for slot in detector.CORNER_SLOTS:               # TL, TR, BR, BL
+        px, py = cap["corner_points"][slot]
+        u = (px - bounds["min_x"]) / bw
+        v = (py - bounds["min_y"]) / bh
+        src.append([u * fw, v * fh])
+    src = np.array(src, dtype=np.float32)
+    dst = np.array([[0, 0], [w, 0], [w, h], [0, h]], dtype=np.float32)
+    M = cv2.getPerspectiveTransform(src, dst)
+    return cv2.warpPerspective(field, M, (w, h))
+
+
+@app.get("/content/stream/<display_id>")
+def content_stream_display(display_id):
+    """Per-screen visualization stream: the server warps the field into THIS
+    screen's rectangle and sends only that, at the screen's resolution, on each
+    new rendered frame (#1, #2, #3). The slave just displays it — no client warp."""
+    def _dim(name, default):
+        try:
+            return max(1, min(VIZ_SCREEN_MAX, int(request.args.get(name, default))))
+        except (TypeError, ValueError):
+            return default
+    w, h = _dim("w", 1280), _dim("h", 720)
+
     def gen():
         boundary = b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
+        last_ver = -1
         while True:
-            with _lock:
-                frame = _viz_frame
-            if frame is None:
-                time.sleep(0.03)
+            with _viz_cond:
+                _viz_cond.wait_for(lambda: _viz_ver != last_ver, timeout=1.0)
+                last_ver = _viz_ver
+                field = _viz_raw
+            warped = _warp_field_to_screen(field, display_id, w, h)
+            if warped is None:
                 continue
-            yield boundary + frame + b"\r\n"
-            time.sleep(0.04)
+            ok, buf = cv2.imencode(".jpg", warped, [cv2.IMWRITE_JPEG_QUALITY, 75])
+            if ok:
+                yield boundary + buf.tobytes() + b"\r\n"
+    return Response(gen(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
+
+@app.get("/content/stream")
+def content_stream():
+    """Full-field debug stream (not used by slaves; they use /content/stream/<id>)."""
+    def gen():
+        boundary = b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
+        last_ver = -1
+        while True:
+            with _viz_cond:
+                _viz_cond.wait_for(lambda: _viz_ver != last_ver, timeout=1.0)
+                last_ver = _viz_ver
+                field = _viz_raw
+            if field is None:
+                continue
+            ok, buf = cv2.imencode(".jpg", field, [cv2.IMWRITE_JPEG_QUALITY, 75])
+            if ok:
+                yield boundary + buf.tobytes() + b"\r\n"
     return Response(gen(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
 
@@ -640,7 +739,7 @@ def _desired_viz_size():
 
 
 def _viz_loop():
-    global _viz, _viz_frame, _viz_size
+    global _viz, _viz_raw, _viz_ver, _viz_size
     while True:
         if _content_kind != "visualization":
             time.sleep(0.1)
@@ -650,11 +749,11 @@ def _viz_loop():
             _viz = visualizations.create(_viz_name, size[0], size[1])
             _viz_size = size
         _viz.step()
-        frame = _viz.render()
-        ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-        if ok:
-            with _lock:
-                _viz_frame = buf.tobytes()
+        frame = _viz.render()                 # raw BGR field; warped per-screen later
+        with _viz_cond:
+            _viz_raw = frame
+            _viz_ver += 1
+            _viz_cond.notify_all()
         time.sleep(0.005)  # render is the limiter at high resolution
 
 
@@ -775,6 +874,7 @@ PHONE_PAGE = r"""
     <option value="viz">Visualization</option>
   </select>
   <select id="vizName" class="sel" style="display:none"></select>
+  <select id="gradName" class="sel" style="display:none"></select>
   <input id="content" type="file" accept="image/*">
   <label class="btn" id="uploadBtn" for="content" style="display:none">🖼️ Choose Image</label>
   <div id="modeRow" style="margin-top:12px; font-size:15px; display:none;">
@@ -885,16 +985,22 @@ liveSource.addEventListener('change', applyLiveSource);
 // --- screen content: UV map / uploaded image / visualization ---
 const contentType=document.getElementById('contentType'),
       vizName=document.getElementById('vizName'),
+      gradName=document.getElementById('gradName'),
       uploadBtn=document.getElementById('uploadBtn'),
       contentInput=document.getElementById('content'),
       cstatus=document.getElementById('cstatus');
 const currentMode=()=>document.querySelector('input[name=cmode]:checked').value;
 
-// populate the visualization dropdown from whatever is registered in mosiac/visualizations
+// populate the visualization + gradient dropdowns from the server
 (async ()=>{
   try{
     const list=await (await fetch('/visualizations')).json();
     vizName.innerHTML=list.map(v=>`<option value="${v.name}">${v.label}</option>`).join('');
+  }catch(e){}
+  try{
+    const g=await (await fetch('/gradients')).json();
+    gradName.innerHTML=g.gradients.map(n=>`<option value="${n}">${n}</option>`).join('');
+    if(g.current) gradName.value=g.current;
   }catch(e){}
 })();
 
@@ -902,10 +1008,17 @@ function refreshContentUI(){
   const t=contentType.value;
   vizName.style.display   = t==='viz'  ? 'block' : 'none';
   uploadBtn.style.display = t==='image'? 'block' : 'none';
+  // gradient selector only when the Smoke visualization is chosen
+  gradName.style.display  = (t==='viz' && vizName.value==='smoke') ? 'block' : 'none';
   // fill/fit only applies to a static image; UV map & visualizations are
   // already generated at the required resolution/aspect.
   document.getElementById('modeRow').style.display = t==='image' ? 'block' : 'none';
 }
+gradName.addEventListener('change', async ()=>{
+  await fetch('/content/gradient',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({name:gradName.value})});
+  cstatus.innerHTML=`<span class="ok">Gradient: ${gradName.value}</span>`;
+});
 async function applyContent(){
   const t=contentType.value;
   // content shows in both mapping and live; only switch to mapping if not live
@@ -928,7 +1041,7 @@ async function applyContent(){
   }catch(e){ cstatus.innerHTML=`<span class="err">${e.message}</span>`; }
 }
 contentType.addEventListener('change', ()=>{ refreshContentUI(); applyContent(); });
-vizName.addEventListener('change', applyContent);
+vizName.addEventListener('change', ()=>{ refreshContentUI(); applyContent(); });
 refreshContentUI();
 
 contentInput.addEventListener('change', async ()=>{

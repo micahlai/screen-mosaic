@@ -1,0 +1,11 @@
+{
+  "name": "gradient2_ice",
+  "stops": [
+    { "pos": 0.0, "color": "000308" },
+    { "pos": 0.2, "color": "0a1a2f" },
+    { "pos": 0.4, "color": "2a4d6e" },
+    { "pos": 0.6, "color": "6f8fb0" },
+    { "pos": 0.8, "color": "c9d6e3" },
+    { "pos": 1.0, "color": "ffffff" }
+  ]
+}

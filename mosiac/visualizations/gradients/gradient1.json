@@ -1,0 +1,11 @@
+{
+  "name": "gradient1_heatmap",
+  "stops": [
+    { "pos": 0.0,    "color": "00082a" },
+    { "pos": 0.2, "color": "1e3542" },
+    { "pos": 0.4, "color": "368191" },
+    { "pos": 0.6,    "color": "feae31" },
+    { "pos": 0.8, "color": "ff4d24" },
+    { "pos": 1.0, "color": "ff0000" }
+  ]
+}
