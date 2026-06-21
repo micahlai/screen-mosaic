@@ -70,7 +70,6 @@ def create(name, width, height):
     return _REGISTRY[name](width, height)
 
 
-<<<<<<< HEAD
 def supports_pointer(name):
     """True if the visualization reacts to a pointer force (set_pointer)."""
     return hasattr(_REGISTRY.get(name), "set_pointer")
@@ -79,11 +78,11 @@ def supports_pointer(name):
 def uses_hands(name):
     """True if the visualization is driven by the YOLO hand tracker."""
     return bool(getattr(_REGISTRY.get(name), "USES_HANDS", False))
-=======
+
+
 def all_viz_params():
     """Returns {viz_name: param_defs} for vizs that expose parameters."""
     return {n: c.viz_params for n, c in _REGISTRY.items() if c.viz_params}
->>>>>>> 13a3a756f3af0831de902c13a8411286d597fd4b
 
 
 class Visualization:
@@ -167,6 +166,84 @@ def _blur(img, sigma):
     up = F.interpolate(small.view(1, 1, *small.shape), size=img.shape,
                        mode="bilinear", align_corners=False)
     return up.view(*img.shape)
+
+
+# ---------------------------------------------------------------------------
+# Shared CPU helpers for the boids sims (vectorized physics + ROI sprite blend)
+# ---------------------------------------------------------------------------
+
+def boids_update(bx, by, bvx, bvy, wander, alive, pred_x, pred_y, *,
+                 visual_range, sep_range, flee_range, min_speed, max_speed,
+                 w_coh, w_ali, w_sep, w_wander, w_flee, width, height, sc):
+    """Vectorized boids step (cohesion/alignment/separation/wander/flee). Replaces
+    the O(N^2) Python double loop with numpy broadcasting. Updates `wander` in
+    place; returns new (bx, by, bvx, bvy)."""
+    N = bx.shape[0]
+    VR2 = (visual_range * sc) ** 2
+    SR2 = (sep_range * sc) ** 2
+    FR2 = (flee_range * sc) ** 2
+    SR_px = sep_range * sc
+    FR_px = flee_range * sc
+    minV, maxV = min_speed * sc, max_speed * sc
+
+    dx = bx[None, :] - bx[:, None]                  # dx[i,j] = bx[j]-bx[i]
+    dy = by[None, :] - by[:, None]
+    d2 = dx * dx + dy * dy
+    av = alive[None, :] & alive[:, None]
+    neigh = av & (d2 <= VR2) & (d2 > 0.0)
+    nn = neigh.sum(axis=1)
+    has = nn > 0
+    inv = np.where(has, 1.0 / np.maximum(nn, 1), 0.0).astype(np.float32)
+
+    fx = np.zeros(N, np.float32); fy = np.zeros(N, np.float32)
+    cohX = (bx[None, :] * neigh).sum(1); cohY = (by[None, :] * neigh).sum(1)
+    aliVx = (bvx[None, :] * neigh).sum(1); aliVy = (bvy[None, :] * neigh).sum(1)
+    fx += (cohX * inv - bx) * w_coh * has;  fy += (cohY * inv - by) * w_coh * has
+    fx += (aliVx * inv - bvx) * w_ali * has; fy += (aliVy * inv - bvy) * w_ali * has
+
+    sep = av & (d2 <= SR2) & (d2 > 0.0)
+    d = np.sqrt(np.where(d2 > 0, d2, 1.0))
+    sfac = np.where(sep, (SR_px - d) / SR_px / d, 0.0)
+    fx += -(dx * sfac).sum(1) * w_sep
+    fy += -(dy * sfac).sum(1) * w_sep
+
+    wander += (np.random.random(N).astype(np.float32) - 0.5) * 0.06
+    fx += np.cos(wander) * w_wander; fy += np.sin(wander) * w_wander
+
+    sxv = bx - pred_x; syv = by - pred_y; sd2 = sxv * sxv + syv * syv
+    flee = (sd2 < FR2) & (sd2 > 0.0)
+    sd = np.sqrt(np.where(sd2 > 0, sd2, 1.0))
+    p = np.where(flee, w_flee * np.clip(1 - sd / FR_px, 0, 1) ** 1.5 / sd, 0.0)
+    fx += sxv * p; fy += syv * p
+
+    bvx = bvx + fx; bvy = bvy + fy
+    sp = np.hypot(bvx, bvy)
+    k = np.where(sp > maxV, maxV / np.maximum(sp, 1e-9),
+                 np.where((sp < minV) & (sp > 0), minV / np.maximum(sp, 1e-9), 1.0))
+    bvx = (bvx * k).astype(np.float32); bvy = (bvy * k).astype(np.float32)
+
+    bx = np.where(alive, bx + bvx, bx); by = np.where(alive, by + bvy, by)
+    bx = np.where(bx < -20 * sc, bx + width + 40 * sc, bx)
+    bx = np.where(bx > width + 20 * sc, bx - (width + 40 * sc), bx)
+    by = np.where(by < -20 * sc, by + height + 40 * sc, by)
+    by = np.where(by > height + 20 * sc, by - (height + 40 * sc), by)
+    return bx.astype(np.float32), by.astype(np.float32), bvx, bvy
+
+
+def blend_roi(img, cx, cy, pad, draw, alpha, base_w=1.0):
+    """Blend a sprite-sized layer instead of a full-frame one:
+    img[roi] = base_w*img[roi] + alpha*draw(mask). `draw(mask, ox, oy)` draws into
+    the small local mask (subtract ox/oy from coords). Turns O(frame) per sprite
+    into O(sprite)."""
+    h, w = img.shape[:2]
+    x0, y0 = max(0, int(cx - pad)), max(0, int(cy - pad))
+    x1, y1 = min(w, int(cx + pad) + 1), min(h, int(cy + pad) + 1)
+    if x1 <= x0 or y1 <= y0:
+        return
+    roi = img[y0:y1, x0:x1]
+    mask = np.zeros_like(roi)
+    draw(mask, x0, y0)
+    img[y0:y1, x0:x1] = cv2.addWeighted(mask, alpha, roi, base_w, 0)
 
 
 # --- gradient maps (used by the smoke viz) ---

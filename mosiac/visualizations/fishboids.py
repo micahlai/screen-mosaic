@@ -10,7 +10,7 @@ import colorsys
 import numpy as np
 import cv2
 
-from . import Visualization, register
+from . import Visualization, register, boids_update, blend_roi
 
 
 # ---------------------------------------------------------------------------
@@ -62,10 +62,11 @@ def draw_fish(img, glow_layer, x, y, angle, hue, spd, sz, sc, max_speed):
     ry  = max(1, int(5.5 * s))
     ang_deg = math.degrees(angle)
 
-    # --- translucent body fill (globalAlpha=0.18 in HTML) ---
-    body_mask = np.zeros_like(img)
-    cv2.ellipse(body_mask, (ecx, ecy), (rx, ry), ang_deg, 0, 360, fill, -1, cv2.LINE_AA)
-    cv2.addWeighted(body_mask, 0.18, img, 1.0, 0, img)
+    # --- translucent body fill (globalAlpha=0.18), drawn in a sprite-sized ROI ---
+    blend_roi(img, ecx, ecy, max(rx, ry) + 2,
+              lambda m, ox, oy: cv2.ellipse(m, (ecx - ox, ecy - oy), (rx, ry),
+                                            ang_deg, 0, 360, fill, -1, cv2.LINE_AA),
+              0.18, 1.0)
 
     # --- stroked outline + tail + fin onto glow_layer (simulates shadowBlur=4) ---
     lw = max(1, int(1.2 * sc))
@@ -112,20 +113,27 @@ def draw_shark(img, x, y, angle, sc):
         return (int(x + (lx * ca - ly * sa) * sc),
                 int(y + (lx * sa + ly * ca) * sc))
 
-    # --- glow aura: translucent fill blurred ---
-    glow_layer = np.zeros_like(img)
     rx = max(1, int(26 * sc)); ry = max(1, int(11 * sc))
-    cv2.ellipse(glow_layer, (x, y), (rx, ry), math.degrees(angle), 0, 360,
-                col, max(2, int(sc * 2)), cv2.LINE_AA)
     ks = max(3, int(sc * 9)) | 1
-    glow_blur = cv2.GaussianBlur(glow_layer, (ks, ks), sc * 4.5)
-    cv2.addWeighted(img, 1.0, glow_blur, 0.55, 0, img)
+    # --- glow aura: translucent fill blurred (within an ROI incl. blur margin) ---
+    H, W = img.shape[:2]
+    pad = max(rx, ry) + ks
+    gx0, gy0 = max(0, x - pad), max(0, y - pad)
+    gx1, gy1 = min(W, x + pad), min(H, y + pad)
+    if gx1 > gx0 and gy1 > gy0:
+        roi = img[gy0:gy1, gx0:gx1]
+        glow = np.zeros_like(roi)
+        cv2.ellipse(glow, (x - gx0, y - gy0), (rx, ry), math.degrees(angle), 0, 360,
+                    col, max(2, int(sc * 2)), cv2.LINE_AA)
+        glow = cv2.GaussianBlur(glow, (ks, ks), sc * 4.5)
+        img[gy0:gy1, gx0:gx1] = cv2.addWeighted(roi, 1.0, glow, 0.55, 0)
 
     # --- translucent body fill rgba(100,170,205,0.15) ---
-    body_mask = np.zeros_like(img)
-    cv2.ellipse(body_mask, (x, y), (rx, ry), math.degrees(angle), 0, 360,
-                (205, 170, 100), -1, cv2.LINE_AA)
-    cv2.addWeighted(body_mask, 0.15, img, 1.0, 0, img)
+    blend_roi(img, x, y, max(rx, ry) + 2,
+              lambda m, ox, oy: cv2.ellipse(m, (x - ox, y - oy), (rx, ry),
+                                            math.degrees(angle), 0, 360,
+                                            (205, 170, 100), -1, cv2.LINE_AA),
+              0.15, 1.0)
 
     # --- body outline ---
     cv2.ellipse(img, (x, y), (rx, ry), math.degrees(angle), 0, 360, col, lw, cv2.LINE_AA)
@@ -347,55 +355,14 @@ class FishBoids(Visualization):
                 if self._eaten >= self.N:
                     self._game_state = "done"
 
-        # fish boids
-        bx, by = self.bx, self.by
-        bvx, bvy = self.bvx, self.bvy
-        VR2 = (self.VISUAL_RANGE * sc) ** 2
-        FR2 = (self.FLEE_RANGE   * sc) ** 2
-        SR2 = (self.SEP_RANGE    * sc) ** 2
-        minV = self.MIN_SPEED * sc; maxV = self.MAX_SPEED * sc
-
-        for i in range(self.N):
-            if not self.alive[i]: continue
-            fx = fy = 0.0
-            cohX = cohY = aliVx = aliVy = sepX = sepY = 0.0; nn = 0
-            for j in range(self.N):
-                if i == j or not self.alive[j]: continue
-                dx_ = bx[j]-bx[i]; dy_ = by[j]-by[i]
-                d2  = dx_*dx_ + dy_*dy_
-                if d2 > VR2: continue
-                cohX += bx[j]; cohY += by[j]
-                aliVx += bvx[j]; aliVy += bvy[j]; nn += 1
-                if d2 < SR2 and d2 > 0:
-                    d_   = math.sqrt(d2)
-                    s_   = (self.SEP_RANGE * sc - d_) / (self.SEP_RANGE * sc)
-                    sepX -= (dx_/d_)*s_; sepY -= (dy_/d_)*s_
-            if nn > 0:
-                fx += (cohX/nn - bx[i]) * self.W_COH
-                fy += (cohY/nn - by[i]) * self.W_COH
-                fx += (aliVx/nn - bvx[i]) * self.W_ALI
-                fy += (aliVy/nn - bvy[i]) * self.W_ALI
-            fx += sepX * self.W_SEP; fy += sepY * self.W_SEP
-            self.wander[i] += (np.random.random() - 0.5) * 0.06
-            fx += math.cos(self.wander[i]) * self.W_WANDER
-            fy += math.sin(self.wander[i]) * self.W_WANDER
-            # flee
-            sx_ = bx[i]-sx; sy_ = by[i]-sy; sd2 = sx_*sx_+sy_*sy_
-            if sd2 < FR2 and sd2 > 0:
-                sd = math.sqrt(sd2)
-                p  = self.W_FLEE * ((1 - sd/(self.FLEE_RANGE*sc))**1.5) / sd
-                fx += sx_*p; fy += sy_*p
-            bvx[i] += fx; bvy[i] += fy
-            sp = math.hypot(bvx[i], bvy[i])
-            if sp > maxV:
-                bvx[i] = bvx[i]/sp*maxV; bvy[i] = bvy[i]/sp*maxV
-            elif sp < minV and sp > 0:
-                bvx[i] = bvx[i]/sp*minV; bvy[i] = bvy[i]/sp*minV
-            bx[i] += bvx[i]; by[i] += bvy[i]
-            if bx[i] < -20*sc: bx[i] += self.w + 40*sc
-            elif bx[i] > self.w + 20*sc: bx[i] -= self.w + 40*sc
-            if by[i] < -20*sc: by[i] += self.h + 40*sc
-            elif by[i] > self.h + 20*sc: by[i] -= self.h + 40*sc
+        # fish boids (vectorized; flee target = shark)
+        self.bx, self.by, self.bvx, self.bvy = boids_update(
+            self.bx, self.by, self.bvx, self.bvy, self.wander, self.alive, sx, sy,
+            visual_range=self.VISUAL_RANGE, sep_range=self.SEP_RANGE,
+            flee_range=self.FLEE_RANGE, min_speed=self.MIN_SPEED,
+            max_speed=self.MAX_SPEED, w_coh=self.W_COH, w_ali=self.W_ALI,
+            w_sep=self.W_SEP, w_wander=self.W_WANDER, w_flee=self.W_FLEE,
+            width=self.w, height=self.h, sc=sc)
 
         # burst particles
         for b in self._bursts:
@@ -453,9 +420,9 @@ class FishBoids(Visualization):
             r_  = max(1, int(3.5 * b['life'] * sc))
             a_  = b['life'] ** 2
             col = _hsl_bgr(b['hue'], 80, 75)
-            burst_layer = np.zeros_like(img)
-            cv2.circle(burst_layer, (bx_, by_), r_, col, -1, cv2.LINE_AA)
-            cv2.addWeighted(burst_layer, a_, img, 1.0, 0, img)
+            blend_roi(img, bx_, by_, r_ + 1,
+                      lambda m, ox, oy: cv2.circle(m, (bx_ - ox, by_ - oy), r_, col, -1, cv2.LINE_AA),
+                      a_, 1.0)
 
         # Shark
         if self.shark_on and self._game_state != "done":

@@ -1,7 +1,7 @@
 """Tunable constants for the Mosiac host."""
 
 # --- Server ---
-PORT = 5001                # HTTP port — everything works here (open this normally)
+PORT = 5003                # HTTP port — everything works here (open this normally)
 # The phone's *live camera* (getUserMedia) needs a secure context, so when
 # USE_HTTPS is on we ALSO serve HTTPS on HTTPS_PORT with an ad-hoc self-signed
 # cert (accept the one-time browser warning). Plain HTTP on PORT keeps working
