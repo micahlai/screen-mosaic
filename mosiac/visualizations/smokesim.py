@@ -24,9 +24,15 @@ class SmokeSim(Visualization):
     # the render size, not the source size). e.g. 1080 or 1440 for crisp grain.
     NOISE_LONG = 720
     NOISE_STRENGTH = 0.45           # how strongly the noise overlay modulates density
+    USES_HANDS = True               # driven by the YOLO hand tracker (not a cursor)
+    POINTER_RADIUS = 0.12           # hand influence radius, fraction of grid long side
+    POINTER_PUSH = 2.0              # how hard the hand pushes smoke along its motion
+    HAND_MARKER_FRAC = 0.06         # hand-marker radius, fraction of render long side
+    HAND_MARKER_ALPHA = 0.3         # 30% opacity black circle at the hand position
 
     def __init__(self, width, height):
         super().__init__(width, height)
+        self._ptr = None            # (nx, ny, nvx, nvy) hand force in field coords
         if self.w >= self.h:
             self.gw = self.SIM_LONG
             self.gh = max(2, round(self.SIM_LONG * self.h / self.w))
@@ -90,6 +96,21 @@ class SmokeSim(Visualization):
     def _ddx(self, f): return torch.nn.functional.conv2d(f, self._kdx, padding=1)
     def _ddy(self, f): return torch.nn.functional.conv2d(f, self._kdy, padding=1)
 
+    def set_pointer(self, ptr):
+        """Hand force (nx, ny, nvx, nvy) in [0,1] field coords + velocity, or None."""
+        self._ptr = ptr
+
+    def _apply_pointer(self):
+        nx, ny, nvx, nvy = self._ptr
+        px, py = nx * self.gw, ny * self.gh
+        dx = self.xs - px
+        dy = self.ys - py
+        sigma = max(self.gw, self.gh) * self.POINTER_RADIUS
+        fall = torch.exp(-(dx * dx + dy * dy) / (2 * sigma * sigma))[None, None]
+        # add force along the hand's direction of travel
+        self.vx = self.vx + (nvx * self.gw) * self.POINTER_PUSH * fall
+        self.vy = self.vy + (nvy * self.gh) * self.POINTER_PUSH * fall
+
     def _advect(self, f):
         F = torch.nn.functional
         bx = (self.xs - self.vx[0, 0]).clamp(0, self.gw - 1)
@@ -112,6 +133,8 @@ class SmokeSim(Visualization):
         # divergence-free swirling velocity = curl(psi)
         self.vx = self._ddy(psi) * self.FLOW
         self.vy = -self._ddx(psi) * self.FLOW
+        if self._ptr is not None:           # hand pushes the smoke
+            self._apply_pointer()
         # advect the haze and only gently replenish so swirls persist/streak
         self.dseed = self.dseed * 0.998 + 0.02 * rnd(self.dseed)
         self.dseed2 = self.dseed2 * 0.99 + 0.04 * rnd(self.dseed2)
@@ -156,7 +179,21 @@ class SmokeSim(Visualization):
         # map density through the gradient LUT (0 -> first color, 1 -> last)
         idx = (v * (self.lut.shape[0] - 1)).round().long()
         frame = self.lut[idx]                        # (H, W, 3) BGR
-        return frame.clamp(0, 255).to(torch.uint8).contiguous().cpu().numpy()
+        out = frame.clamp(0, 255).to(torch.uint8).contiguous().cpu().numpy()
+        return self._draw_hand(out)
+
+    def _draw_hand(self, frame):
+        """Draw a 30%-opacity black circle where the hand currently is."""
+        if self._ptr is None:
+            return frame
+        nx, ny = self._ptr[0], self._ptr[1]
+        cx, cy = int(nx * self.w), int(ny * self.h)
+        r = max(2, int(self.HAND_MARKER_FRAC * max(self.w, self.h)))
+        overlay = frame.copy()
+        cv2.circle(overlay, (cx, cy), r, (0, 0, 0), -1, cv2.LINE_AA)
+        cv2.addWeighted(overlay, self.HAND_MARKER_ALPHA,
+                        frame, 1 - self.HAND_MARKER_ALPHA, 0, dst=frame)
+        return frame
 
     # --- CPU fallback (no torch): blurred drifting noise ---
     def _step_cpu(self):
@@ -176,4 +213,4 @@ class SmokeSim(Visualization):
         up = np.where(up < 0.5, 2 * up * noise, 1 - 2 * (1 - up) * (1 - noise))   # overlay
         v = np.clip(up * 1.35 - 0.12, 0, 1)
         idx = (v * (lut.shape[0] - 1)).round().astype(np.int32)
-        return lut[idx].astype(np.uint8)             # (H, W, 3) BGR
+        return self._draw_hand(lut[idx].astype(np.uint8))   # (H, W, 3) BGR

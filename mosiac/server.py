@@ -51,10 +51,12 @@ try:                       # `python -m mosiac` / imported as a package
     from . import detector
     from . import visualizations
     from . import consts
+    from . import hands
 except ImportError:        # `python mosiac` (directory on sys.path)
     import detector
     import visualizations
     import consts
+    import hands
 
 MARKER_DICT = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
 MARKERS_PER_DISPLAY = 4
@@ -103,6 +105,11 @@ _viz_ver = 0             # bumped each new rendered field
 _viz_cond = threading.Condition()
 _viz_size = None         # (w, h) the sim is currently running at
 _viz_started = False
+# Hand-driven input (YOLO tracker -> current hand -> sim force)
+_pointer = None          # (u, v, vu, vv, ts) in field coords, fed to the sim
+_current_hand = None     # latest current-hand info (for /hands/status)
+_hands_started = False
+_hands_debug = None      # latest annotated YOLO camera frame (JPEG bytes)
 
 # Live calibration state
 _live_source = "phone"   # "phone" (phone streams frames) | "server" (host camera)
@@ -644,7 +651,110 @@ def start_visualization():
             _viz_name = name
             _viz = None          # force the loop to rebuild with the new sim
     _ensure_viz_thread()
+    if visualizations.uses_hands(name):
+        _ensure_hands_thread()       # YOLO hand tracker drives the sim
     return jsonify({"ok": True, "kind": "visualization", "name": name, "mode": mode})
+
+
+# ---------------------------------------------------------------------------
+# Hand tracking (YOLO) -> current hand -> field-coordinate force on the sim
+# ---------------------------------------------------------------------------
+
+def _calibration_image_size():
+    """The image size the calibration (and thus uv_bounds) is expressed in."""
+    with _lock:
+        for d in _displays.values():
+            cap = d.get("capture")
+            if cap and cap.get("complete"):
+                return cap["image_size"]["width"], cap["image_size"]["height"]
+    return None
+
+
+def _hand_to_field(cx, cy):
+    """Map a normalized camera position to normalized field (UV) coords, using
+    the calibrated screen bounds (camera assumed at the calibration position)."""
+    b = _uv_bounds
+    cal = _calibration_image_size()
+    if not b or not cal:
+        return cx, cy, 1.0, 1.0            # fallback: whole camera -> whole field
+    cw, ch = cal
+    bx0, by0 = b["min_x"] / cw, b["min_y"] / ch
+    bw = (b["max_x"] - b["min_x"]) / cw or 1e-6
+    bh = (b["max_y"] - b["min_y"]) / ch or 1e-6
+    return (cx - bx0) / bw, (cy - by0) / bh, bw, bh
+
+
+def _on_hand(hand):
+    """Callback from the hand tracker: hand = (cx, cy, vx, vy) normalized camera
+    coords + velocity, or None. Convert to a field-space force in _pointer."""
+    global _pointer, _current_hand
+    if hand is None:
+        _current_hand = None
+        return
+    cx, cy, vx, vy = hand
+    u, v, bw, bh = _hand_to_field(cx, cy)
+    vu, vv = vx / bw, vy / bh
+    u = min(1.0, max(0.0, u)); v = min(1.0, max(0.0, v))
+    _pointer = (u, v, vu, vv, time.time())
+    _current_hand = {"u": u, "v": v, "vu": vu, "vv": vv}
+
+
+def _on_hand_debug(frame):
+    """Store the annotated YOLO frame (downscaled) for the /hands/debug stream."""
+    global _hands_debug
+    h, w = frame.shape[:2]
+    if w > 640:
+        frame = cv2.resize(frame, (640, max(1, round(640 * h / w))))
+    ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+    if ok:
+        _hands_debug = buf.tobytes()
+
+
+def _ensure_hands_thread():
+    global _hands_started
+    with _lock:
+        if _hands_started:
+            return
+        _hands_started = True
+
+    def should_run():
+        # run while a hand-driven viz is the content and the host camera is free
+        return (_content_kind == "visualization"
+                and visualizations.uses_hands(_viz_name)
+                and not (_phase == "live" and _live_source == "server"))
+
+    threading.Thread(
+        target=hands.run,
+        kwargs=dict(should_run=should_run, on_hand=_on_hand,
+                    on_debug=_on_hand_debug if consts.HAND_DEBUG else None,
+                    camera_index=consts.CAMERA_INDEX, fps=consts.HAND_FPS,
+                    device=consts.HAND_DEVICE, conf=consts.HAND_CONF,
+                    imgsz=consts.HAND_IMGSZ, roi_imgsz=consts.HAND_ROI_IMGSZ,
+                    cam_width=consts.HAND_CAM_WIDTH, use_coreml=consts.HAND_COREML),
+        daemon=True).start()
+
+
+@app.get("/hands/status")
+def hands_status():
+    return jsonify({"active": visualizations.uses_hands(_viz_name)
+                    and _content_kind == "visualization",
+                    "current_hand": _current_hand})
+
+
+@app.get("/hands/debug")
+def hands_debug():
+    """MJPEG stream of the YOLO camera feed with detections drawn (debug view).
+    Open this URL in a browser tab while a hand-driven viz is active."""
+    def gen():
+        boundary = b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
+        while True:
+            frame = _hands_debug
+            if frame is None:
+                time.sleep(0.1)
+                continue
+            yield boundary + frame + b"\r\n"
+            time.sleep(1.0 / max(1, consts.HAND_FPS))
+    return Response(gen(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
 
 @app.post("/content/clear")
@@ -748,6 +858,11 @@ def _viz_loop():
         if _viz is None or _viz_size != size:
             _viz = visualizations.create(_viz_name, size[0], size[1])
             _viz_size = size
+        # feed the current hand's force to the sim (if it accepts one, recent)
+        if hasattr(_viz, "set_pointer"):
+            p = _pointer
+            _viz.set_pointer((p[0], p[1], p[2], p[3])
+                             if (p and time.time() - p[4] < 0.3) else None)
         _viz.step()
         frame = _viz.render()                 # raw BGR field; warped per-screen later
         with _viz_cond:

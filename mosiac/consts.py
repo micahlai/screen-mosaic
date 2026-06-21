@@ -26,3 +26,16 @@ CAMERA_INDEX = 0           # cv2.VideoCapture index for the "server" camera sour
 # only affect live mode; the one-off phone photo still auto-detects + refines.
 LIVE_DICT = "DICT_4X4_50"  # marker dictionary used on the screens
 LIVE_MAX_WIDTH = 1280      # downscale live frames to at most this width before detect
+
+# --- Hand tracking ---
+# Hand-driven visualizations (e.g. smoke) use the host camera + a YOLOv8-pose
+# model to track hands; the hand that's been on screen the longest pushes the
+# sim. The camera is assumed to sit where the calibration photo was taken.
+HAND_FPS = 12              # hand-tracking / detection rate
+HAND_DEVICE = "cpu"        # YOLO device for the PyTorch fallback ("cpu"|"mps"|"cuda")
+HAND_CONF = 0.3            # min keypoint confidence to count a wrist as a hand
+HAND_IMGSZ = 320           # full-frame inference size — lower = faster (e.g. 256)
+HAND_COREML = True         # on macOS, run the pose model on the Neural Engine (CoreML)
+HAND_ROI_IMGSZ = 192       # inference size once detection is cropped to the person
+HAND_CAM_WIDTH = 960       # camera capture width (lower = lower latency / less work)
+HAND_DEBUG = True          # compute + stream the annotated debug view (/hands/debug)

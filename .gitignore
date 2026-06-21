@@ -8,3 +8,5 @@ annotated.png
 !docs/*.png
 calibration_debug/
 mosiac/calibration_debug/
+*.pt
+*.mlpackage

@@ -70,6 +70,16 @@ def create(name, width, height):
     return _REGISTRY[name](width, height)
 
 
+def supports_pointer(name):
+    """True if the visualization reacts to a pointer force (set_pointer)."""
+    return hasattr(_REGISTRY.get(name), "set_pointer")
+
+
+def uses_hands(name):
+    """True if the visualization is driven by the YOLO hand tracker."""
+    return bool(getattr(_REGISTRY.get(name), "USES_HANDS", False))
+
+
 class Visualization:
     """Base class. Subclasses implement step() and render() -> HxWx3 uint8 BGR.
     The render canvas is (width, height) * RESOLUTION_SCALE."""
