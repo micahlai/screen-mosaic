@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ghost Trail — Mouse Prototype</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; background: #08080f; overflow: hidden; cursor: none; }
+  canvas { display: block; }
+  .hint {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    color: rgba(255,255,255,0.18); font: 12px/1 system-ui;
+    letter-spacing: 0.15em; text-transform: uppercase; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hint">prototype · mouse → hand detection later</div>
+<script>
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+
+let W, H;
+function resize() {
+  W = canvas.width  = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// Raw mouse position
+let mx = W / 2, my = H / 2;
+// Smoothed cursor (lags behind — creates the "ghost" feel)
+let cx = mx, cy = my;
+// Velocity for extra smear on fast movement
+let vx = 0, vy = 0;
+
+window.addEventListener('mousemove', e => { mx = e.clientX; my = e.clientY; });
+
+// ---------------------------------------------------------------------------
+// Trail ring-buffer
+// ---------------------------------------------------------------------------
+const TRAIL_LEN = 72;
+const trailX = new Float32Array(TRAIL_LEN);
+const trailY = new Float32Array(TRAIL_LEN);
+let trailHead = 0, trailFill = 0;
+
+function pushTrail(x, y) {
+  trailX[trailHead] = x;
+  trailY[trailHead] = y;
+  trailHead = (trailHead + 1) % TRAIL_LEN;
+  if (trailFill < TRAIL_LEN) trailFill++;
+}
+
+// ---------------------------------------------------------------------------
+// Wisp particles
+// ---------------------------------------------------------------------------
+const MAX_PARTICLES = 300;
+const px  = new Float32Array(MAX_PARTICLES);
+const py  = new Float32Array(MAX_PARTICLES);
+const pvx = new Float32Array(MAX_PARTICLES);
+const pvy = new Float32Array(MAX_PARTICLES);
+const plife = new Float32Array(MAX_PARTICLES);
+const psize = new Float32Array(MAX_PARTICLES);
+const phue  = new Float32Array(MAX_PARTICLES);
+let   pCount = 0, pHead = 0;
+
+function spawnParticle(x, y, speedBoost) {
+  const i   = pHead % MAX_PARTICLES;
+  const ang = Math.random() * Math.PI * 2;
+  const spd = (Math.random() * 1.2 + 0.4) * (1 + speedBoost * 0.4);
+  px[i]    = x + (Math.random() - 0.5) * 18;
+  py[i]    = y + (Math.random() - 0.5) * 18;
+  pvx[i]   = Math.cos(ang) * spd * 0.25 + vx * 0.08;
+  pvy[i]   = Math.sin(ang) * spd - 0.6  + vy * 0.08;
+  plife[i] = 1.0;
+  psize[i] = Math.random() * 6 + 3;
+  phue[i]  = 195 + Math.random() * 65;   // cyan → blue → violet
+  pHead++;
+  if (pCount < MAX_PARTICLES) pCount++;
+}
+
+// ---------------------------------------------------------------------------
+// Main loop
+// ---------------------------------------------------------------------------
+let last = performance.now();
+
+function frame(now) {
+  requestAnimationFrame(frame);
+
+  const dt = Math.min((now - last) / 16.67, 3.0);
+  last = now;
+
+  // -- smooth cursor with spring-damper --
+  const speed = Math.hypot(mx - cx, my - cy);
+  const ease  = 1 - Math.pow(0.08, dt);       // ~92% per frame lag → ghost feeling
+  const pvxOld = vx, pvyOld = vy;
+  vx = (mx - cx) * ease;
+  vy = (my - cy) * ease;
+  cx += vx;
+  cy += vy;
+
+  // -- trail --
+  pushTrail(cx, cy);
+
+  // -- spawn wisps (more on fast movement) --
+  const boost = Math.min(speed / 60, 2);
+  const count = Math.floor(1 + boost * 2);
+  for (let k = 0; k < count; k++) {
+    if (Math.random() < 0.65 + boost * 0.2) spawnParticle(cx, cy, boost);
+  }
+
+  // -- fade background (motion-blur feel) --
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 0.22;
+  ctx.fillStyle   = '#08080f';
+  ctx.fillRect(0, 0, W, H);
+  ctx.globalAlpha = 1;
+
+  // -- draw trail (oldest → newest so newest paints on top) --
+  ctx.globalCompositeOperation = 'lighter';
+  for (let k = trailFill - 1; k >= 0; k--) {
+    const idx = (trailHead - 1 - k + TRAIL_LEN) % TRAIL_LEN;
+    const t   = 1 - k / trailFill;          // 0 = oldest, 1 = newest
+    const r   = 4 + t * 26;
+    const a   = t * t * 0.55;
+    const hue = 210 + (1 - t) * 50;
+    const lit = 55 + t * 30;
+
+    const g = ctx.createRadialGradient(trailX[idx], trailY[idx], 0,
+                                        trailX[idx], trailY[idx], r);
+    g.addColorStop(0,   `hsla(${hue},85%,${lit}%,${a})`);
+    g.addColorStop(0.5, `hsla(${hue},75%,${lit-15}%,${a*0.35})`);
+    g.addColorStop(1,   `hsla(${hue},60%,50%,0)`);
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(trailX[idx], trailY[idx], r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // -- draw particles --
+  const DECAY = 0.014;
+  for (let i = 0; i < MAX_PARTICLES; i++) {
+    if (plife[i] <= 0) continue;
+    plife[i] -= DECAY * dt;
+    if (plife[i] <= 0) continue;
+    px[i]    += pvx[i] * dt;
+    py[i]    += pvy[i] * dt;
+    pvy[i]   *= Math.pow(0.97, dt);
+    pvx[i]   *= Math.pow(0.97, dt);
+    psize[i] *= Math.pow(0.987, dt);
+
+    const a  = plife[i] * 0.6;
+    const r  = psize[i] * 2;
+    const g2 = ctx.createRadialGradient(px[i], py[i], 0, px[i], py[i], r);
+    g2.addColorStop(0, `hsla(${phue[i]},90%,85%,${a})`);
+    g2.addColorStop(1, `hsla(${phue[i]},80%,65%,0)`);
+    ctx.fillStyle = g2;
+    ctx.beginPath();
+    ctx.arc(px[i], py[i], r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // -- main cursor orb --
+  const orb = ctx.createRadialGradient(cx, cy, 0, cx, cy, 48);
+  orb.addColorStop(0,    'rgba(230,245,255,1)');
+  orb.addColorStop(0.15, 'rgba(170,215,255,0.75)');
+  orb.addColorStop(0.5,  'rgba(100,165,255,0.25)');
+  orb.addColorStop(1,    'rgba(80,120,255,0)');
+  ctx.fillStyle = orb;
+  ctx.beginPath();
+  ctx.arc(cx, cy, 48, 0, Math.PI * 2);
+  ctx.fill();
+
+  // inner bright core
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = 'rgba(255,255,255,0.92)';
+  ctx.beginPath();
+  ctx.arc(cx, cy, 3.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+}
+
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
