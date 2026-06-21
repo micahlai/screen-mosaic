@@ -55,10 +55,10 @@ def _speed_rgb_t(spd_t, sc):
 
 @register("charges", "Charges")
 class ChargesSim(Visualization):
-    C1   = -200    # inter-particle constant (negative = attract)
-    C2   = 45000   # cursor attraction constant
+    C1   = -8000    # inter-particle constant (negative = attract)
+    C2   = 450000   # cursor attraction constant
     C3   = 0.97    # drag per frame
-    DT_S = 1 / 60  # physics timestep
+    DT_S = 1 / 120  # physics timestep
 
     def __init__(self, width, height):
         super().__init__(width, height)
@@ -67,10 +67,9 @@ class ChargesSim(Visualization):
         self.N = 1000 if self._gpu else 400
 
         N = self.N
-        angles = np.random.uniform(0, 2 * math.pi, N).astype(np.float32)
-        radii  = (60 + np.random.uniform(0, 120, N)).astype(np.float32) * sc
-        px  = (self.w / 2 + np.cos(angles) * radii).astype(np.float32)
-        py  = (self.h / 2 + np.sin(angles) * radii).astype(np.float32)
+        # spawn uniformly across the whole allotted area (was a ring around centre)
+        px  = np.random.uniform(0, self.w, N).astype(np.float32)
+        py  = np.random.uniform(0, self.h, N).astype(np.float32)
         pvx = (np.random.uniform(-0.5, 0.5, N) * sc).astype(np.float32)
         pvy = (np.random.uniform(-0.5, 0.5, N) * sc).astype(np.float32)
 

@@ -81,9 +81,6 @@ _seq = 0
 _phase = "mapping"                  # mapping by default; slaves wait for a photo
 _uv_bounds = None                   # global UV domain = bbox of all screen corners
 
-# Fraction of the screen-corner bounding box added as margin around the UV map.
-UV_MARGIN = 0.05
-
 # Optional content mapped onto the UV space instead of the color gradient.
 _content_kind = None     # None | "image" | "visualization"
 _content_bytes = None
@@ -1361,7 +1358,7 @@ def _detect_and_update(image, keep_missing, dictionary=None, refine=True):
     if all_pts:
         xs = [p[0] for p in all_pts]; ys = [p[1] for p in all_pts]
         min_x, max_x, min_y, max_y = min(xs), max(xs), min(ys), max(ys)
-        mx, my = (max_x - min_x) * UV_MARGIN, (max_y - min_y) * UV_MARGIN
+        mx, my = (max_x - min_x) * consts.UV_MARGIN, (max_y - min_y) * consts.UV_MARGIN
         bounds = {"min_x": min_x - mx, "min_y": min_y - my,
                   "max_x": max_x + mx, "max_y": max_y + my}
     else:

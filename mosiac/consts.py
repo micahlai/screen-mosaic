@@ -9,6 +9,10 @@ PORT = 5003                # HTTP port — everything works here (open this norm
 USE_HTTPS = True
 HTTPS_PORT = PORT + 1      # HTTPS port (only needed for the phone live camera)
 
+# --- Screen map ---
+# Fraction of the screen-corner bounding box added as margin around the UV map.
+UV_MARGIN = 0.01
+
 # --- Marker sizes shown on the screen-slave pages (CSS pixels) ---
 MARKER_PX = 150            # normal calibration markers (phase "calibration")
 LIVE_MARKER_PX = 90        # smaller markers kept on screen during live calibration
