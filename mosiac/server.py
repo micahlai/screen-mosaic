@@ -614,6 +614,26 @@ def set_gradient():
     return jsonify({"gradient": name})
 
 
+@app.get("/viz/params")
+def get_viz_params():
+    """Return param definitions for every visualization that exposes them."""
+    return jsonify(visualizations.all_viz_params())
+
+
+@app.post("/viz/param")
+def set_viz_param():
+    """Set a param on the currently running visualization instance."""
+    body = request.get_json(silent=True) or {}
+    key  = body.get("key")
+    val  = body.get("value")
+    if key is None or val is None:
+        return jsonify({"error": "key and value required"}), 400
+    with _lock:
+        if _viz is not None:
+            _viz.set_param(key, val)
+    return jsonify({"ok": True, "key": key, "value": val})
+
+
 @app.post("/content")
 def upload_content():
     global _content_kind, _content_bytes, _content_mime, _content_version, _content_mode
@@ -991,6 +1011,7 @@ PHONE_PAGE = r"""
   </select>
   <select id="vizName" class="sel" style="display:none"></select>
   <select id="gradName" class="sel" style="display:none"></select>
+  <select id="vizParamMode" class="sel" style="display:none"></select>
   <input id="content" type="file" accept="image/*">
   <label class="btn" id="uploadBtn" for="content" style="display:none">🖼️ Choose Image</label>
   <div id="modeRow" style="margin-top:12px; font-size:15px; display:none;">
@@ -1102,10 +1123,14 @@ liveSource.addEventListener('change', applyLiveSource);
 const contentType=document.getElementById('contentType'),
       vizName=document.getElementById('vizName'),
       gradName=document.getElementById('gradName'),
+      vizParamMode=document.getElementById('vizParamMode'),
       uploadBtn=document.getElementById('uploadBtn'),
       contentInput=document.getElementById('content'),
       cstatus=document.getElementById('cstatus');
 const currentMode=()=>document.querySelector('input[name=cmode]:checked').value;
+
+// all viz param definitions loaded once at startup
+let _vizParamDefs = {};
 
 // populate the visualization + gradient dropdowns from the server
 (async ()=>{
@@ -1118,22 +1143,37 @@ const currentMode=()=>document.querySelector('input[name=cmode]:checked').value;
     gradName.innerHTML=g.gradients.map(n=>`<option value="${n}">${n}</option>`).join('');
     if(g.current) gradName.value=g.current;
   }catch(e){}
+  try{
+    _vizParamDefs=await (await fetch('/viz/params')).json();
+  }catch(e){}
 })();
 
 function refreshContentUI(){
   const t=contentType.value;
+  const vn=vizName.value;
   vizName.style.display   = t==='viz'  ? 'block' : 'none';
   uploadBtn.style.display = t==='image'? 'block' : 'none';
-  // gradient selector only when the Smoke visualization is chosen
-  gradName.style.display  = (t==='viz' && vizName.value==='smoke') ? 'block' : 'none';
-  // fill/fit only applies to a static image; UV map & visualizations are
-  // already generated at the required resolution/aspect.
+  gradName.style.display  = (t==='viz' && vn==='smoke') ? 'block' : 'none';
   document.getElementById('modeRow').style.display = t==='image' ? 'block' : 'none';
+  // show mode dropdown for any viz that has a "mode" param
+  const modeDef = t==='viz' && _vizParamDefs[vn] && _vizParamDefs[vn]['mode'];
+  if(modeDef){
+    vizParamMode.innerHTML=modeDef.options.map(o=>`<option value="${o.value}">${o.label}</option>`).join('');
+    vizParamMode.value=modeDef.default;
+    vizParamMode.style.display='block';
+  } else {
+    vizParamMode.style.display='none';
+  }
 }
 gradName.addEventListener('change', async ()=>{
   await fetch('/content/gradient',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({name:gradName.value})});
   cstatus.innerHTML=`<span class="ok">Gradient: ${gradName.value}</span>`;
+});
+vizParamMode.addEventListener('change', async ()=>{
+  await fetch('/viz/param',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({key:'mode', value:vizParamMode.value})});
+  cstatus.innerHTML=`<span class="ok">Mode: ${vizParamMode.options[vizParamMode.selectedIndex].text}</span>`;
 });
 async function applyContent(){
   const t=contentType.value;

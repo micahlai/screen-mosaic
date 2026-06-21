@@ -1,0 +1,503 @@
+"""Fish boid simulation — faithful Python port of boids.html.
+
+Drawing is a direct translation of drawFish() / drawShark() from the HTML:
+same coordinate layout, same colour formula, same glow/shadow technique.
+"""
+
+import math
+import time
+import colorsys
+import numpy as np
+import cv2
+
+from . import Visualization, register
+
+
+# ---------------------------------------------------------------------------
+# Coordinate helpers
+# ---------------------------------------------------------------------------
+
+def _lw(lx, ly, x, y, ca, sa, sz, sc):
+    """HTML local-space (lx,ly) → render-pixel (wx,wy).
+    sz = per-fish size multiplier, sc = render scale."""
+    return (int(x + (lx * ca - ly * sa) * sz * sc),
+            int(y + (lx * sa + ly * ca) * sz * sc))
+
+
+def _bezier(p0, p1, p2, n=10):
+    """Quadratic Bézier points in local space, matching quadraticCurveTo."""
+    pts = []
+    for i in range(n + 1):
+        t = i / n
+        u = 1 - t
+        pts.append((u*u*p0[0] + 2*t*u*p1[0] + t*t*p2[0],
+                    u*u*p0[1] + 2*t*u*p1[1] + t*t*p2[1]))
+    return pts
+
+
+def _hsl_bgr(h_deg, s_pct, l_pct):
+    """HSL → OpenCV BGR uint8.  colorsys uses HLS order."""
+    r, g, b = colorsys.hls_to_rgb(h_deg / 360.0, l_pct / 100.0, s_pct / 100.0)
+    return (int(b * 255), int(g * 255), int(r * 255))
+
+
+# ---------------------------------------------------------------------------
+# Fish sprite  (matches drawFish() in boids.html)
+# ---------------------------------------------------------------------------
+
+def draw_fish(img, glow_layer, x, y, angle, hue, spd, sz, sc, max_speed):
+    """Draw one fish onto img (detail) and glow_layer (strokes to be blurred)."""
+    t_spd = min(spd / (max_speed * sc), 1.0)
+    lit   = 52 + t_spd * 30
+    col   = _hsl_bgr(hue, 75, lit)     # strokeStyle / solid colour
+    fill  = _hsl_bgr(hue, 70, lit)     # fill colour (blended at 0.18)
+
+    ca, sa = math.cos(angle), math.sin(angle)
+    s = sz * sc   # combined scale in render pixels
+
+    # body centre at local (1, 0)
+    ecx = int(x + ca * s)
+    ecy = int(y + sa * s)
+    rx  = max(1, int(10 * s))
+    ry  = max(1, int(5.5 * s))
+    ang_deg = math.degrees(angle)
+
+    # --- translucent body fill (globalAlpha=0.18 in HTML) ---
+    body_mask = np.zeros_like(img)
+    cv2.ellipse(body_mask, (ecx, ecy), (rx, ry), ang_deg, 0, 360, fill, -1, cv2.LINE_AA)
+    cv2.addWeighted(body_mask, 0.18, img, 1.0, 0, img)
+
+    # --- stroked outline + tail + fin onto glow_layer (simulates shadowBlur=4) ---
+    lw = max(1, int(1.2 * sc))
+    cv2.ellipse(glow_layer, (ecx, ecy), (rx, ry), ang_deg, 0, 360, col, lw, cv2.LINE_AA)
+
+    # forked tail: (-9,0)→(-17,-7) and (-9,0)→(-17,7)
+    tail_root = _lw(-9,  0, x, y, ca, sa, sz, sc)
+    cv2.line(glow_layer, tail_root, _lw(-17, -7, x, y, ca, sa, sz, sc), col, lw, cv2.LINE_AA)
+    cv2.line(glow_layer, tail_root, _lw(-17,  7, x, y, ca, sa, sz, sc), col, lw, cv2.LINE_AA)
+
+    # dorsal fin: (-2,-5.5)→(2,-9)→(5,-5.5)
+    fin = np.array([_lw(-2, -5.5, x, y, ca, sa, sz, sc),
+                    _lw( 2, -9,   x, y, ca, sa, sz, sc),
+                    _lw( 5, -5.5, x, y, ca, sa, sz, sc)], dtype=np.int32)
+    cv2.polylines(glow_layer, [fin], False, col, max(1, int(sc)), cv2.LINE_AA)
+
+    # --- eye (drawn on img directly) ---
+    ep = _lw(5.5, -1.6, x, y, ca, sa, sz, sc)
+    er = max(1, int(1.5 * s))
+    cv2.circle(img, ep, er, col, -1, cv2.LINE_AA)
+    hp = _lw(6.0, -2.1, x, y, ca, sa, sz, sc)
+    hr = max(1, int(0.55 * s))
+    cv2.circle(img, hp, hr, (200, 200, 200), -1, cv2.LINE_AA)
+
+    # --- smile bezier: (2.5,1)→(4.2,3.2)→(6.5,1) ---
+    smile_local = _bezier((2.5, 1), (4.2, 3.2), (6.5, 1), n=8)
+    smile_world = np.array([_lw(px_ * sz, py_ * sz, x, y, ca, sa, 1, sc)
+                             for px_, py_ in smile_local], dtype=np.int32)
+    cv2.polylines(img, [smile_world], False, col, max(1, int(sc)), cv2.LINE_AA)
+
+
+# ---------------------------------------------------------------------------
+# Shark sprite  (matches drawShark() in boids.html)
+# ---------------------------------------------------------------------------
+
+def draw_shark(img, x, y, angle, sc):
+    """Draw the shark at render-pixel position (x,y) facing `angle`."""
+    ca, sa = math.cos(angle), math.sin(angle)
+    col   = (0xe0, 0xc8, 0x8c)   # #8cc8e0 in BGR
+    dark  = (0x4a, 0x3a, 0x1e)   # #1e3a4a in BGR
+    lw    = max(1, int(1.8 * sc))
+
+    def lw_(lx, ly):
+        return (int(x + (lx * ca - ly * sa) * sc),
+                int(y + (lx * sa + ly * ca) * sc))
+
+    # --- glow aura: translucent fill blurred ---
+    glow_layer = np.zeros_like(img)
+    rx = max(1, int(26 * sc)); ry = max(1, int(11 * sc))
+    cv2.ellipse(glow_layer, (x, y), (rx, ry), math.degrees(angle), 0, 360,
+                col, max(2, int(sc * 2)), cv2.LINE_AA)
+    ks = max(3, int(sc * 9)) | 1
+    glow_blur = cv2.GaussianBlur(glow_layer, (ks, ks), sc * 4.5)
+    cv2.addWeighted(img, 1.0, glow_blur, 0.55, 0, img)
+
+    # --- translucent body fill rgba(100,170,205,0.15) ---
+    body_mask = np.zeros_like(img)
+    cv2.ellipse(body_mask, (x, y), (rx, ry), math.degrees(angle), 0, 360,
+                (205, 170, 100), -1, cv2.LINE_AA)
+    cv2.addWeighted(body_mask, 0.15, img, 1.0, 0, img)
+
+    # --- body outline ---
+    cv2.ellipse(img, (x, y), (rx, ry), math.degrees(angle), 0, 360, col, lw, cv2.LINE_AA)
+
+    # --- dorsal fin: (-6,-11)→(0,-26)→(10,-11) ---
+    fin_d = np.array([lw_(-6, -11), lw_(0, -26), lw_(10, -11)], dtype=np.int32)
+    cv2.polylines(img, [fin_d], False, col, max(1, int(1.5 * sc)), cv2.LINE_AA)
+
+    # --- pectoral fin: (4,11)→(-2,21)→(-10,11) ---
+    fin_p = np.array([lw_(4, 11), lw_(-2, 21), lw_(-10, 11)], dtype=np.int32)
+    cv2.polylines(img, [fin_p], False, col, max(1, int(1.5 * sc)), cv2.LINE_AA)
+
+    # --- tail: (-26,0)→(-40,±15) ---
+    tail_root = lw_(-26, 0)
+    cv2.line(img, tail_root, lw_(-40, -15), col, max(2, int(2 * sc)), cv2.LINE_AA)
+    cv2.line(img, tail_root, lw_(-40,  15), col, max(2, int(2 * sc)), cv2.LINE_AA)
+
+    # --- teeth zigzag ---
+    for sign in (1, -1):
+        teeth = np.array([lw_(18, sign*-3), lw_(22, sign*-1),
+                          lw_(24, sign*-4), lw_(26, sign*-1)], dtype=np.int32)
+        cv2.polylines(img, [teeth], False, dark, max(1, int(sc)), cv2.LINE_AA)
+
+    # --- eye ---
+    ep = lw_(13, -3.5)
+    cv2.circle(img, ep, max(2, int(3 * sc)), dark, -1, cv2.LINE_AA)
+    hp = lw_(14, -4.2)
+    cv2.circle(img, hp, max(1, int(sc)), (140, 140, 140), -1, cv2.LINE_AA)
+
+
+# ---------------------------------------------------------------------------
+# Background  (matches drawBackground() in boids.html)
+# ---------------------------------------------------------------------------
+
+def _make_ocean_bg(h, w):
+    """Pre-render ocean background: dark-blue gradient + caustic grid."""
+    bg = np.zeros((h, w, 3), dtype=np.uint8)
+    # Linear gradient #030f1c → #041525 → #020b16
+    for y in range(h):
+        t = y / h
+        if t < 0.5:
+            t2 = t / 0.5
+            r = int(0x03 + (0x04 - 0x03) * t2)
+            g = int(0x0f + (0x15 - 0x0f) * t2)
+            b = int(0x1c + (0x25 - 0x1c) * t2)
+        else:
+            t2 = (t - 0.5) / 0.5
+            r = int(0x04 + (0x02 - 0x04) * t2)
+            g = int(0x15 + (0x0b - 0x15) * t2)
+            b = int(0x25 + (0x16 - 0x25) * t2)
+        bg[y] = (b, g, r)
+    # Subtle caustic grid lines (rgba(40,100,160,0.04))
+    grid_col = (int(160 * 0.04), int(100 * 0.04), int(40 * 0.04))
+    step = max(1, int(60 * h / 1080))  # scale grid to render res
+    for gx in range(0, w, step):
+        cv2.line(bg, (gx, 0), (gx, h), grid_col, 1)
+    for gy in range(0, h, step):
+        cv2.line(bg, (0, gy), (w, gy), grid_col, 1)
+    return bg
+
+
+# ---------------------------------------------------------------------------
+# Visualization
+# ---------------------------------------------------------------------------
+
+@register("fish-boids", "Fish Boids")
+class FishBoids(Visualization):
+
+    viz_params = {
+        "mode": {
+            "label": "Mode",
+            "options": [
+                {"value": "normal", "label": "Normal"},
+                {"value": "game",   "label": "Game"},
+            ],
+            "default": "normal",
+        }
+    }
+
+    N            = 220
+    VISUAL_RANGE = 75.0
+    SEP_RANGE    = 22.0
+    MAX_SPEED    = 6.5
+    MIN_SPEED    = 1.8
+    W_COH        = 0.0040
+    W_ALI        = 0.048
+    W_SEP        = 0.12
+    W_WANDER     = 0.038
+    FLEE_RANGE   = 170.0
+    W_FLEE       = 7.5
+    EAT_RADIUS   = 34.0
+    SHARK_ACCEL    = 2.2
+    SHARK_MAX_SPD  = 28.0
+    SHARK_DRAG     = 0.88
+    SHARK_TURN     = 0.22
+
+    def __init__(self, width, height):
+        super().__init__(width, height)
+        sc  = self.scale
+        N   = self.N
+
+        cols = round(math.sqrt(N * self.w / self.h))
+        rows = math.ceil(N / cols)
+        cw, ch = self.w / cols, self.h / rows
+
+        rng = np.random.default_rng()
+        bx  = np.zeros(N, dtype=np.float32)
+        by  = np.zeros(N, dtype=np.float32)
+        bvx = np.zeros(N, dtype=np.float32)
+        bvy = np.zeros(N, dtype=np.float32)
+
+        for i in range(N):
+            bx[i] = (i % cols + 0.5 + (rng.random() - 0.5) * 0.85) * cw
+            by[i] = (i // cols + 0.5 + (rng.random() - 0.5) * 0.85) * ch
+            d = rng.random() * 2 * math.pi
+            s = (self.MIN_SPEED + rng.random() * 1.4) * sc
+            bvx[i] = math.cos(d) * s
+            bvy[i] = math.sin(d) * s
+
+        self.bx    = bx
+        self.by    = by
+        self.bvx   = bvx
+        self.bvy   = bvy
+        self.wander = rng.random(N).astype(np.float32) * 2 * math.pi
+        # per-fish random hue (148-218) and size (0.78-1.22)
+        self.hues  = (148 + rng.random(N) * 70).astype(np.float32)
+        self.sizes = (0.78 + rng.random(N) * 0.44).astype(np.float32)
+        self.alive = np.ones(N, dtype=bool)
+
+        self.sx = float(self.w) / 2; self.sy = float(self.h) / 2
+        self.svx = 0.0; self.svy = 0.0
+        self.sangle = 0.0
+        self.shark_on = False
+        self._tw = 0.0
+
+        self._game_state = "waiting"
+        self._start_t    = 0.0
+        self._elapsed    = 0.0
+        self._eaten      = 0
+        self._bursts     = []
+
+        self._bg      = _make_ocean_bg(self.h, self.w)
+        # motion-fade colour #020d18 in BGR
+        self._fade_col = (0x18, 0x0d, 0x02)
+
+    # ------------------------------------------------------------------ param
+    def set_param(self, key, val):
+        super().set_param(key, val)
+        if key == "mode":
+            self._reset_game()
+
+    def _reset_game(self):
+        N    = self.N; sc = self.scale
+        self.alive[:] = True
+        self._game_state = "waiting"; self._elapsed = 0.0; self._eaten = 0
+        self._bursts.clear(); self.shark_on = False
+        self.sx = float(self.w) / 2; self.sy = float(self.h) / 2
+        self.svx = 0.0; self.svy = 0.0
+        rng  = np.random.default_rng()
+        cols = round(math.sqrt(N * self.w / self.h))
+        rows = math.ceil(N / cols)
+        cw, ch = self.w / cols, self.h / rows
+        for i in range(N):
+            self.bx[i] = (i % cols + 0.5 + (rng.random()-0.5)*0.85) * cw
+            self.by[i] = (i // cols + 0.5 + (rng.random()-0.5)*0.85) * ch
+
+    # ------------------------------------------------------------------ cursor
+    def _cursor(self):
+        t  = self._tw
+        cx = self.w / 2 + self.w * 0.38 * math.sin(t * 0.53)
+        cy = self.h / 2 + self.h * 0.32 * math.sin(t * 0.79)
+        return cx, cy
+
+    # ------------------------------------------------------------------ step
+    def step(self):
+        sc = self.scale
+        self._tw += 0.04
+        cx, cy = self._cursor()
+
+        # game-mode auto-start when shark "enters" (first cursor position available)
+        mode = self._params.get("mode", "normal")
+        if not self.shark_on:
+            self.sx = cx; self.sy = cy; self.shark_on = True
+        if mode == "game" and self._game_state == "waiting":
+            self._game_state = "playing"; self._start_t = time.time()
+        if mode == "game" and self._game_state == "playing":
+            self._elapsed = time.time() - self._start_t
+
+        # shark update (same as HTML)
+        sx, sy = self.sx, self.sy
+        dx_, dy_ = cx - sx, cy - sy
+        dist = math.hypot(dx_, dy_)
+        if dist > 2:
+            ta   = math.atan2(dy_, dx_)
+            diff = ta - self.sangle
+            while diff >  math.pi: diff -= 2 * math.pi
+            while diff < -math.pi: diff += 2 * math.pi
+            self.sangle += math.copysign(min(abs(diff), self.SHARK_TURN), diff)
+            thr  = min(dist / 20, 1)
+            self.svx += math.cos(self.sangle) * self.SHARK_ACCEL * thr
+            self.svy += math.sin(self.sangle) * self.SHARK_ACCEL * thr
+        self.svx *= self.SHARK_DRAG; self.svy *= self.SHARK_DRAG
+        spd_ = math.hypot(self.svx, self.svy)
+        if spd_ > self.SHARK_MAX_SPD:
+            f = self.SHARK_MAX_SPD / spd_
+            self.svx *= f; self.svy *= f
+        self.sx += self.svx * sc; self.sy += self.svy * sc
+        sx, sy = self.sx, self.sy
+
+        # eat collision
+        if mode == "game" and self._game_state == "playing":
+            er2 = (self.EAT_RADIUS * sc) ** 2
+            dxe = self.bx - sx; dye = self.by - sy
+            eaten_now = self.alive & (dxe*dxe + dye*dye < er2)
+            if eaten_now.any():
+                for i in np.where(eaten_now)[0]:
+                    self.alive[i] = False; self._eaten += 1
+                    self._spawn_burst(self.bx[i], self.by[i], self.hues[i])
+                if self._eaten >= self.N:
+                    self._game_state = "done"
+
+        # fish boids
+        bx, by = self.bx, self.by
+        bvx, bvy = self.bvx, self.bvy
+        VR2 = (self.VISUAL_RANGE * sc) ** 2
+        FR2 = (self.FLEE_RANGE   * sc) ** 2
+        SR2 = (self.SEP_RANGE    * sc) ** 2
+        minV = self.MIN_SPEED * sc; maxV = self.MAX_SPEED * sc
+
+        for i in range(self.N):
+            if not self.alive[i]: continue
+            fx = fy = 0.0
+            cohX = cohY = aliVx = aliVy = sepX = sepY = 0.0; nn = 0
+            for j in range(self.N):
+                if i == j or not self.alive[j]: continue
+                dx_ = bx[j]-bx[i]; dy_ = by[j]-by[i]
+                d2  = dx_*dx_ + dy_*dy_
+                if d2 > VR2: continue
+                cohX += bx[j]; cohY += by[j]
+                aliVx += bvx[j]; aliVy += bvy[j]; nn += 1
+                if d2 < SR2 and d2 > 0:
+                    d_   = math.sqrt(d2)
+                    s_   = (self.SEP_RANGE * sc - d_) / (self.SEP_RANGE * sc)
+                    sepX -= (dx_/d_)*s_; sepY -= (dy_/d_)*s_
+            if nn > 0:
+                fx += (cohX/nn - bx[i]) * self.W_COH
+                fy += (cohY/nn - by[i]) * self.W_COH
+                fx += (aliVx/nn - bvx[i]) * self.W_ALI
+                fy += (aliVy/nn - bvy[i]) * self.W_ALI
+            fx += sepX * self.W_SEP; fy += sepY * self.W_SEP
+            self.wander[i] += (np.random.random() - 0.5) * 0.06
+            fx += math.cos(self.wander[i]) * self.W_WANDER
+            fy += math.sin(self.wander[i]) * self.W_WANDER
+            # flee
+            sx_ = bx[i]-sx; sy_ = by[i]-sy; sd2 = sx_*sx_+sy_*sy_
+            if sd2 < FR2 and sd2 > 0:
+                sd = math.sqrt(sd2)
+                p  = self.W_FLEE * ((1 - sd/(self.FLEE_RANGE*sc))**1.5) / sd
+                fx += sx_*p; fy += sy_*p
+            bvx[i] += fx; bvy[i] += fy
+            sp = math.hypot(bvx[i], bvy[i])
+            if sp > maxV:
+                bvx[i] = bvx[i]/sp*maxV; bvy[i] = bvy[i]/sp*maxV
+            elif sp < minV and sp > 0:
+                bvx[i] = bvx[i]/sp*minV; bvy[i] = bvy[i]/sp*minV
+            bx[i] += bvx[i]; by[i] += bvy[i]
+            if bx[i] < -20*sc: bx[i] += self.w + 40*sc
+            elif bx[i] > self.w + 20*sc: bx[i] -= self.w + 40*sc
+            if by[i] < -20*sc: by[i] += self.h + 40*sc
+            elif by[i] > self.h + 20*sc: by[i] -= self.h + 40*sc
+
+        # burst particles
+        for b in self._bursts:
+            b['x'] += b['vx']; b['y'] += b['vy']
+            b['vx'] *= 0.91;   b['vy'] *= 0.91
+            b['life'] -= 0.038
+        self._bursts = [b for b in self._bursts if b['life'] > 0]
+
+        self.t += 0.016
+
+    def _spawn_burst(self, x, y, hue):
+        sc = self.scale
+        for _ in range(12):
+            a = np.random.random() * 2 * math.pi
+            s = (1.8 + np.random.random() * 3) * sc
+            self._bursts.append({'x': x, 'y': y,
+                                  'vx': math.cos(a)*s, 'vy': math.sin(a)*s,
+                                  'life': 1.0, 'hue': hue})
+
+    # ------------------------------------------------------------------ render
+    def render(self):
+        sc   = self.scale
+        mode = self._params.get("mode", "normal")
+
+        # Background
+        img = self._bg.copy()
+
+        # Motion fade: globalAlpha=0.18, fill #020d18
+        fade = np.full_like(img, self._fade_col)
+        cv2.addWeighted(fade, 0.18, img, 0.82, 0, img)
+
+        # Glow layer for fish strokes (simulates shadowBlur=4)
+        glow_layer = np.zeros_like(img)
+
+        # Fish
+        for i in range(self.N):
+            if not self.alive[i]: continue
+            draw_fish(img, glow_layer,
+                      int(self.bx[i]), int(self.by[i]),
+                      math.atan2(self.bvy[i], self.bvx[i]),
+                      self.hues[i],
+                      math.hypot(self.bvx[i], self.bvy[i]),
+                      self.sizes[i], sc,
+                      self.MAX_SPEED)
+
+        # Blur glow and composite (matches shadowBlur=4 → sigma=4*sc)
+        sig = max(1.0, 4.0 * sc)
+        ks  = max(3, int(sig * 2)) | 1
+        glow_blur = cv2.GaussianBlur(glow_layer, (ks, ks), sig)
+        cv2.addWeighted(img, 1.0, glow_blur, 0.8, 0, img)
+
+        # Burst particles
+        for b in self._bursts:
+            bx_, by_ = int(b['x']), int(b['y'])
+            r_  = max(1, int(3.5 * b['life'] * sc))
+            a_  = b['life'] ** 2
+            col = _hsl_bgr(b['hue'], 80, 75)
+            burst_layer = np.zeros_like(img)
+            cv2.circle(burst_layer, (bx_, by_), r_, col, -1, cv2.LINE_AA)
+            cv2.addWeighted(burst_layer, a_, img, 1.0, 0, img)
+
+        # Shark
+        if self.shark_on and self._game_state != "done":
+            draw_shark(img, int(self.sx), int(self.sy), self.sangle, sc)
+
+        # HUD
+        if mode == "game":
+            self._draw_hud(img, sc)
+
+        return img
+
+    def _draw_hud(self, img, sc):
+        font  = cv2.FONT_HERSHEY_SIMPLEX
+        state = self._game_state
+        W, H  = self.w, self.h
+
+        def put(txt, x, y, size, col, bold=False):
+            th = 2 if bold else 1
+            cv2.putText(img, txt, (x, y), font, size * sc, col, max(1, int(th * sc)), cv2.LINE_AA)
+
+        if state == "waiting":
+            txt = "Move cursor - shark gives chase. Eat all fish!"
+            tw  = cv2.getTextSize(txt, font, 0.5 * sc, max(1, int(sc)))[0][0]
+            put(txt, (W - tw) // 2, int(H * 0.94), 0.5, (200, 235, 255))
+        elif state == "playing":
+            elapsed = self._elapsed
+            put(f"{elapsed:.2f}s", W // 2 - int(40 * sc), int(42 * sc), 0.7, (235, 245, 200), bold=True)
+            remaining = int(self.alive.sum())
+            put(f"{remaining} remaining", W - int(120 * sc), int(34 * sc), 0.4, (200, 215, 170))
+        elif state == "done":
+            overlay = img.copy()
+            cv2.rectangle(overlay, (0, 0), (W, H), (24, 13, 2), -1)
+            cv2.addWeighted(overlay, 0.75, img, 0.25, 0, img)
+            t1 = "All fish eaten!"
+            tw1 = cv2.getTextSize(t1, font, 1.2 * sc, max(2, int(sc * 2)))[0][0]
+            cv2.putText(img, t1, ((W - tw1)//2, H//2 - int(50*sc)), font,
+                        1.2 * sc, (0xe0, 0xc8, 0x8c), max(2, int(sc * 2)), cv2.LINE_AA)
+            t2 = f"Time: {self._elapsed:.2f}s"
+            tw2 = cv2.getTextSize(t2, font, 0.9 * sc, max(2, int(sc * 1.5)))[0][0]
+            cv2.putText(img, t2, ((W - tw2)//2, H//2 + int(12*sc)), font,
+                        0.9 * sc, (245, 235, 220), max(1, int(sc * 1.5)), cv2.LINE_AA)
+            t3 = "Click to play again"
+            tw3 = cv2.getTextSize(t3, font, 0.43 * sc, max(1, int(sc)))[0][0]
+            cv2.putText(img, t3, ((W - tw3)//2, H//2 + int(58*sc)), font,
+                        0.43 * sc, (200, 210, 160), max(1, int(sc)), cv2.LINE_AA)

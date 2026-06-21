@@ -70,6 +70,7 @@ def create(name, width, height):
     return _REGISTRY[name](width, height)
 
 
+<<<<<<< HEAD
 def supports_pointer(name):
     """True if the visualization reacts to a pointer force (set_pointer)."""
     return hasattr(_REGISTRY.get(name), "set_pointer")
@@ -78,11 +79,32 @@ def supports_pointer(name):
 def uses_hands(name):
     """True if the visualization is driven by the YOLO hand tracker."""
     return bool(getattr(_REGISTRY.get(name), "USES_HANDS", False))
+=======
+def all_viz_params():
+    """Returns {viz_name: param_defs} for vizs that expose parameters."""
+    return {n: c.viz_params for n, c in _REGISTRY.items() if c.viz_params}
+>>>>>>> 13a3a756f3af0831de902c13a8411286d597fd4b
 
 
 class Visualization:
     """Base class. Subclasses implement step() and render() -> HxWx3 uint8 BGR.
-    The render canvas is (width, height) * RESOLUTION_SCALE."""
+    The render canvas is (width, height) * RESOLUTION_SCALE.
+
+    Subclasses can expose user-settable parameters by overriding viz_params:
+
+        viz_params = {
+            "mode": {
+                "label": "Mode",
+                "options": [{"value": "normal", "label": "Normal"}, ...],
+                "default": "normal",
+            }
+        }
+
+    The phone UI discovers these via GET /viz/params and sets them via
+    POST /viz/param.
+    """
+
+    viz_params: dict = {}   # override in subclass to expose phone-UI dropdowns
 
     def __init__(self, width, height):
         # effective scale = RESOLUTION_SCALE, clamped so the long side <= the cap
@@ -94,6 +116,18 @@ class Visualization:
         self.w = max(1, int(round(width * eff)))
         self.h = max(1, int(round(height * eff)))
         self.t = 0.0
+        self._params = {k: v["default"] for k, v in self.__class__.viz_params.items()}
+
+    def set_param(self, key, val):
+        """Called by the server when the phone UI changes a dropdown value."""
+        defs = self.__class__.viz_params
+        if key in defs:
+            valid = [o["value"] for o in defs[key]["options"]]
+            if val in valid:
+                self._params[key] = val
+
+    def get_param(self, key, default=None):
+        return self._params.get(key, default)
 
     def step(self):
         raise NotImplementedError
@@ -141,3 +175,6 @@ from . import gradients      # noqa: E402,F401
 # --- register built-in visualizations (importing each runs its @register) ---
 from . import particleflow   # noqa: E402,F401
 from . import smokesim       # noqa: E402,F401
+from . import charges        # noqa: E402,F401
+from . import fishboids      # noqa: E402,F401
+from . import birdboids      # noqa: E402,F401

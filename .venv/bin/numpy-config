@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 #!/Users/micahlai/code/berkeley-hackathon/.venv/bin/python
+=======
+#!/Users/rubilee/code/berkeley-hackathon/.venv/bin/python3.14
+>>>>>>> 13a3a756f3af0831de902c13a8411286d597fd4b
 import sys
 from numpy._configtool import main
 if __name__ == '__main__':
