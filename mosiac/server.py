@@ -35,12 +35,21 @@ Run the host (both web apps):
 from __future__ import annotations
 
 import datetime
+import gc
 import io
 import json
+import logging
+import os
 import socket
 import threading
 import time
 from pathlib import Path
+
+# Werkzeug logs every HTTP request to stderr by default. With MJPEG streams and
+# per-frame POSTs that's one blocking console write per frame; on a slow terminal
+# the write stalls the serving thread (and, via the GIL, the whole process). Drop
+# the per-request access logs so rendering/casting never blocks on stdout.
+logging.getLogger("werkzeug").setLevel(logging.ERROR)
 
 import cv2
 import numpy as np
@@ -884,8 +893,24 @@ def _desired_viz_size():
     return (max(1, round(VIZ_MAX_SIDE * bw / bh)), VIZ_MAX_SIDE)
 
 
+def _tune_gc():
+    """Stop the cyclic GC from causing periodic stop-the-world pauses (which freeze
+    every thread at once — render, casting, even prints). The render frees its
+    per-frame numpy buffers by refcount immediately; the collector only adds hitches.
+    Freeze the long-lived objects so collections stay cheap, and raise the thresholds
+    so they're rare. Set MOSIAC_GC_DEBUG=1 to log when collections actually happen."""
+    gc.collect()
+    gc.freeze()                                   # exclude startup objects from scans
+    gc.set_threshold(100_000, 1000, 1000)         # collect far less often
+    if os.environ.get("MOSIAC_GC_DEBUG"):
+        gc.callbacks.append(
+            lambda phase, info: phase == "start"
+            and print(f"[gc] {time.time():.3f} {info}", flush=True))
+
+
 def _viz_loop():
     global _viz, _viz_raw, _viz_ver, _viz_size
+    _gc_tuned = False
     while True:
         if _content_kind != "visualization":
             time.sleep(0.1)
@@ -905,6 +930,9 @@ def _viz_loop():
             _viz_raw = frame
             _viz_ver += 1
             _viz_cond.notify_all()
+        if not _gc_tuned:                 # once the viz + its buffers exist, freeze
+            _tune_gc()
+            _gc_tuned = True
         time.sleep(0.005)  # render is the limiter at high resolution
 
 
@@ -1027,6 +1055,7 @@ PHONE_PAGE = r"""
   <select id="vizName" class="sel" style="display:none"></select>
   <select id="gradName" class="sel" style="display:none"></select>
   <select id="vizParamMode" class="sel" style="display:none"></select>
+  <button class="btn alt" id="ringToggle" style="display:none">⭕ Hand ring: On</button>
   <input id="content" type="file" accept="image/*">
   <label class="btn" id="uploadBtn" for="content" style="display:none">🖼️ Choose Image</label>
   <div id="modeRow" style="margin-top:12px; font-size:15px; display:none;">
@@ -1139,6 +1168,7 @@ const contentType=document.getElementById('contentType'),
       vizName=document.getElementById('vizName'),
       gradName=document.getElementById('gradName'),
       vizParamMode=document.getElementById('vizParamMode'),
+      ringToggle=document.getElementById('ringToggle'),
       uploadBtn=document.getElementById('uploadBtn'),
       contentInput=document.getElementById('content'),
       cstatus=document.getElementById('cstatus');
@@ -1181,6 +1211,8 @@ function refreshContentUI(){
   } else {
     vizParamMode.style.display='none';
   }
+  // the gray hand-ring toggle only applies to red-CV (phone-camera) vizzes
+  ringToggle.style.display = (t==='viz' && _vizNeedsPhone[vn]) ? 'block' : 'none';
 }
 gradName.addEventListener('change', async ()=>{
   await fetch('/content/gradient',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -1191,6 +1223,14 @@ vizParamMode.addEventListener('change', async ()=>{
   await fetch('/viz/param',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({key:'mode', value:vizParamMode.value})});
   cstatus.innerHTML=`<span class="ok">Mode: ${vizParamMode.options[vizParamMode.selectedIndex].text}</span>`;
+});
+let ringOn=true;
+ringToggle.addEventListener('click', async ()=>{
+  ringOn=!ringOn;
+  ringToggle.textContent = ringOn ? '⭕ Hand ring: On' : '⭕ Hand ring: Off';
+  await fetch('/viz/param',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({key:'ring', value:ringOn})});
+  cstatus.innerHTML=`<span class="ok">Hand ring ${ringOn?'on':'off'}</span>`;
 });
 function _updatePhoneStreamForViz(){
   // Auto-start phone stream if the selected viz needs the phone camera and we're

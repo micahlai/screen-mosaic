@@ -21,7 +21,7 @@ import cv2          # noqa: F401
 
 # --- adjust this ---------------------------------------------------------
 # Render-resolution multiplier (see README). 4.0 -> ~4K field at ~17 fps on MPS.
-RESOLUTION_SCALE = 8.0
+RESOLUTION_SCALE = 2.0
 # Hard cap on the rendered long side. The slaves re-warp/downsample the stream
 # to their own screens, so rendering much past 4K wastes time on the JPEG encode
 # and tanks the frame-rate (8K ≈ 1.4 fps) while adding ~no visible sharpness.

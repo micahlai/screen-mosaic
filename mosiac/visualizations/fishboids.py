@@ -207,6 +207,7 @@ class FishBoids(Visualization):
         # the hand (YOLO tracker) is the predator the fish flee from
         self._ptr = None
         self.has_hand = False
+        self._show_ring = True                  # gray hand-marker ring (toggled from phone UI)
         self.sx = -1e9; self.sy = -1e9          # predator position (off until a hand)
 
         self._game_state = "waiting"
@@ -218,12 +219,23 @@ class FishBoids(Visualization):
         self._bg      = _make_ocean_bg(self.h, self.w)
         # motion-fade colour #020d18 in BGR
         self._fade_col = (0x18, 0x0d, 0x02)
+        # The motion fade is a constant tint of a constant background, so bake it
+        # in once instead of allocating + blending a full-frame fade every render.
+        # Also preallocate the glow buffer (reused each tick) so the render loop
+        # churns one full-frame array per frame (the output) instead of three —
+        # cutting the allocation rate that triggers stop-the-world GC pauses.
+        _fade = np.full_like(self._bg, self._fade_col)
+        self._base = cv2.addWeighted(_fade, 0.18, self._bg, 0.82, 0)
+        self._glow = np.zeros_like(self._bg)
 
     # ------------------------------------------------------------------ param
     def set_param(self, key, val):
         super().set_param(key, val)
         if key == "mode":
             self._reset_game()
+        elif key == "ring":          # gray hand-marker ring on/off (phone toggle)
+            self._show_ring = (val is True or
+                               str(val).lower() in ("true", "1", "on", "yes"))
 
     def set_pointer(self, ptr):
         """Hand force (nx, ny, nvx, nvy) in [0,1] field coords, or None."""
@@ -307,15 +319,15 @@ class FishBoids(Visualization):
         sc   = self.scale
         mode = self._params.get("mode", "normal")
 
-        # Background
-        img = self._bg.copy()
+        # Background (fade already baked into _base). Fresh copy each frame: the
+        # caster threads read the returned frame asynchronously, so it can't be a
+        # reused buffer.
+        img = self._base.copy()
 
-        # Motion fade: globalAlpha=0.18, fill #020d18
-        fade = np.full_like(img, self._fade_col)
-        cv2.addWeighted(fade, 0.18, img, 0.82, 0, img)
-
-        # Glow layer for fish strokes (simulates shadowBlur=4)
-        glow_layer = np.zeros_like(img)
+        # Glow layer for fish strokes (simulates shadowBlur=4) — reused buffer,
+        # not returned, so it's safe to zero in place instead of reallocating.
+        glow_layer = self._glow
+        glow_layer.fill(0)
 
         # Fish
         for i in range(self.N):
@@ -332,7 +344,7 @@ class FishBoids(Visualization):
         sig = max(1.0, 4.0 * sc)
         ks  = max(3, int(sig * 2)) | 1
         glow_blur = blur_down(glow_layer, sig)
-        cv2.addWeighted(img, 1.0, glow_blur, 0.8, 0, img)
+        cv2.addWeighted(img, 1.0, glow_blur, 1.8, 0, img)
 
         # Burst particles
         for b in self._bursts:
@@ -345,7 +357,7 @@ class FishBoids(Visualization):
                       a_, 1.0)
 
         # Hand marker (the "shark") — a translucent ring at the tracked position
-        if self.has_hand and self._game_state != "done":
+        if self.has_hand and self._game_state != "done" and self._show_ring:
             self._draw_hand_circle(img, int(self.sx), int(self.sy), sc)
 
         # HUD

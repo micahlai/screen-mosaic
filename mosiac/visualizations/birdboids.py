@@ -275,6 +275,12 @@ class BirdBoids(Visualization):
 
         self._bg       = _make_sky_bg(self.h, self.w)
         self._fade_col = (0xe0, 0xd0, 0xb8)   # pale sky blue for fade (BGR)
+        # Bake the constant motion-fade into the background once, and preallocate
+        # the glow buffer, so render() churns one full-frame array per frame (the
+        # returned output) instead of three — far less GC pressure / no hitches.
+        _fade = np.full_like(self._bg, self._fade_col)
+        self._base = cv2.addWeighted(_fade, 0.14, self._bg, 0.86, 0)
+        self._glow = np.zeros_like(self._bg)
 
     # ------------------------------------------------------------------ param
     def set_param(self, key, val):
@@ -373,13 +379,10 @@ class BirdBoids(Visualization):
     def render(self):
         sc   = self.scale
         mode = self._params.get("mode", "normal")
-        img  = self._bg.copy()
+        img  = self._base.copy()        # fade baked in; fresh buffer (caster reads it)
 
-        # Motion fade (sky colour at 0.14 alpha)
-        fade = np.full_like(img, self._fade_col)
-        cv2.addWeighted(fade, 0.14, img, 0.86, 0, img)
-
-        glow_layer = np.zeros_like(img)
+        glow_layer = self._glow         # reused (not returned) -> zero in place
+        glow_layer.fill(0)
 
         for i in range(self.N):
             if not self.alive[i]: continue
@@ -392,7 +395,7 @@ class BirdBoids(Visualization):
                       self.MAX_SPEED, flap)
 
         sig = max(1.0, 4.0*sc); ks = max(3, int(sig*2))|1
-        cv2.addWeighted(img, 1.0, blur_down(glow_layer, sig), 0.75, 0, img)
+        cv2.addWeighted(img, 1.0, blur_down(glow_layer, sig), 1.05, 0, img)
 
         for b in self._bursts:
             r_ = max(1, int(3.5*b['life']*sc)); a_ = b['life']**2

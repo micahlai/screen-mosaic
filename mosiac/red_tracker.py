@@ -20,7 +20,7 @@ _RED_UPPER2 = np.array([180, 255, 255], dtype=np.uint8)
 #SAT MIN 180 -> 160 to LOOSEN
 
 # Minimum blob area in pixels to count as a detection (filters noise)
-MIN_AREA = 300
+MIN_AREA = 150
 
 
 def _find_red_centroid(frame):

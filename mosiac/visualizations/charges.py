@@ -55,9 +55,9 @@ def _speed_rgb_t(spd_t, sc):
 
 @register("charges", "Charges")
 class ChargesSim(Visualization):
-    C1   = -8000    # inter-particle constant (negative = attract)
+    C1   = -12000    # inter-particle constant (negative = attract)
     C2   = 450000   # cursor attraction constant
-    C3   = 0.97    # drag per frame
+    C3   = 0.98    # drag per frame
     DT_S = 1 / 120  # physics timestep
 
     def __init__(self, width, height):
