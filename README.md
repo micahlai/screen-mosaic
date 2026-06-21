@@ -3,6 +3,8 @@
 
 # Screen Mosaic
 
+🏆 [View on Devpost](https://devpost.com/software/screen-mosaic) · 📺 [Demo video](https://youtu.be/9e3s38W8MYw)
+
 Turn several ordinary displays into one coordinated canvas using a single phone
 photo. Each screen shows four ArUco markers in its corners; you photograph them
 all from one spot; the host then warps content per-screen so that — viewed from
