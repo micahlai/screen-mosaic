@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Magnets</title>
+<style>
+  * { margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; background: #06060f; overflow: hidden; cursor: crosshair; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+
+let W, H;
+function resize() {
+  W = canvas.width  = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ---- Constants ------------------------------------------------------------
+const N    = 1000;      // particle count
+const C1   = -200;     // repulsion between particles  (F = C1 / d²)
+const C2   = 45000;    // attraction to cursor         (F = C2 / d²)
+const C3   = 0.97;    // drag coefficient             (v *= C3^dt each frame)
+const DT_S = 1 / 60; // physics timestep (seconds per frame at 60 fps)
+const MIN_D = 6;      // minimum distance to cap force magnitude
+
+// ---- Particle state (typed arrays for speed) ------------------------------
+const px  = new Float32Array(N);
+const py  = new Float32Array(N);
+const pvx = new Float32Array(N);
+const pvy = new Float32Array(N);
+
+// Spawn particles in a loose cluster around screen center
+for (let i = 0; i < N; i++) {
+  const angle = Math.random() * Math.PI * 2;
+  const r     = 60 + Math.random() * 120;
+  px[i]  = W / 2 + Math.cos(angle) * r;
+  py[i]  = H / 2 + Math.sin(angle) * r;
+  pvx[i] = (Math.random() - 0.5) * 2;
+  pvy[i] = (Math.random() - 0.5) * 2;
+}
+
+// ---- Mouse ----------------------------------------------------------------
+let mouseX = W / 2, mouseY = H / 2;
+window.addEventListener('mousemove', e => { mouseX = e.clientX; mouseY = e.clientY; });
+
+// ---- Color by speed -------------------------------------------------------
+// slow → blue-purple (hue 250), fast → pink-white (hue 320, high lightness)
+function speedColor(spd, alpha) {
+  const t   = Math.min(spd / 6, 1);
+  const hue = 250 + t * 70;
+  const sat = 80 - t * 20;
+  const lit = 38 + t * 48;
+  return `hsla(${hue|0},${sat|0}%,${lit|0}%,${alpha.toFixed(3)})`;
+}
+
+// ---- Main loop ------------------------------------------------------------
+let last = performance.now();
+
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dt  = Math.min((now - last) / 16.67, 3);
+  last = now;
+
+  // --- Physics update -------------------------------------------------------
+  const drag = Math.pow(C3, dt);
+
+  for (let i = 0; i < N; i++) {
+    let fx = 0, fy = 0;
+
+    // Cursor attraction
+    const cx = mouseX - px[i];
+    const cy = mouseY - py[i];
+    const cd = Math.max(Math.hypot(cx, cy), MIN_D);
+    const cf = C2 / (cd * cd);
+    fx += (cx / cd) * cf;
+    fy += (cy / cd) * cf;
+
+    // Particle–particle repulsion (iterate upper triangle, apply to both)
+    for (let j = i + 1; j < N; j++) {
+      const dx = px[i] - px[j];
+      const dy = py[i] - py[j];
+      const d  = Math.max(Math.hypot(dx, dy), MIN_D);
+      const f  = C1 / (d * d);
+      const nx = (dx / d) * f;
+      const ny = (dy / d) * f;
+      // i pushed away from j
+      fx      += nx;
+      fy      += ny;
+      // j pushed away from i (Newton's 3rd law)
+      pvx[j]  -= nx * DT_S * dt;
+      pvy[j]  -= ny * DT_S * dt;
+    }
+
+    pvx[i] = (pvx[i] + fx * DT_S * dt) * drag;
+    pvy[i] = (pvy[i] + fy * DT_S * dt) * drag;
+    px[i]  += pvx[i] * dt;
+    py[i]  += pvy[i] * dt;
+
+    // Soft boundary wrap
+    if (px[i] < -20) px[i] = W + 20;
+    if (px[i] > W + 20) px[i] = -20;
+    if (py[i] < -20) py[i] = H + 20;
+    if (py[i] > H + 20) py[i] = -20;
+  }
+
+  // --- Render ---------------------------------------------------------------
+  // Slow fade — trails persist briefly
+  ctx.globalAlpha = 0.18;
+  ctx.fillStyle   = '#06060f';
+  ctx.fillRect(0, 0, W, H);
+  ctx.globalAlpha = 1;
+
+  ctx.globalCompositeOperation = 'lighter';
+
+  for (let i = 0; i < N; i++) {
+    const spd  = Math.hypot(pvx[i], pvy[i]);
+    const glowR = 6 + spd * 1.4;
+
+    // Outer glow blob
+    const g = ctx.createRadialGradient(px[i], py[i], 0, px[i], py[i], glowR);
+    g.addColorStop(0,   speedColor(spd, 0.85));
+    g.addColorStop(0.4, speedColor(spd, 0.25));
+    g.addColorStop(1,   speedColor(spd, 0));
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(px[i], py[i], glowR, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Bright core dot
+    ctx.fillStyle = speedColor(spd, Math.min(0.5 + spd * 0.08, 1));
+    ctx.beginPath();
+    ctx.arc(px[i], py[i], 1.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
