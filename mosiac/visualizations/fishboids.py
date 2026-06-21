@@ -359,7 +359,7 @@ class FishBoids(Visualization):
         blend_roi(img, cx, cy, r + max(2, r // 6) + 2,
                   lambda m, ox, oy: cv2.circle(m, (cx - ox, cy - oy), r,
                                                (235, 245, 255), max(2, r // 6), cv2.LINE_AA),
-                  0.5, 1.0)
+                  0.1, 1.0)
 
     def _draw_hud(self, img, sc):
         font  = cv2.FONT_HERSHEY_SIMPLEX

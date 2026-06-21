@@ -24,11 +24,13 @@ class SmokeSim(Visualization):
     # the render size, not the source size). e.g. 1080 or 1440 for crisp grain.
     NOISE_LONG = 720
     NOISE_STRENGTH = 0.45           # how strongly the noise overlay modulates density
-    USES_HANDS = True               # driven by the YOLO hand tracker (not a cursor)
+    USES_HANDS         = True        # driven by hand tracker (not a cursor)
+    HAND_TRACKER       = "red"       # use red-sticker CV tracking, not YOLO
+    NEEDS_PHONE_CAMERA = True        # phone must stream frames whenever this viz is active
     POINTER_RADIUS = 0.12           # hand influence radius, fraction of grid long side
     POINTER_PUSH = 2.0              # how hard the hand pushes smoke along its motion
     HAND_MARKER_FRAC = 0.02         # hand-marker ring radius, fraction of render long side
-    HAND_MARKER_ALPHA = 0.3         # 30% opacity black ring at the hand position
+    HAND_MARKER_ALPHA = 0.1         # 10% opacity black ring at the hand position
 
     def __init__(self, width, height):
         super().__init__(width, height)
